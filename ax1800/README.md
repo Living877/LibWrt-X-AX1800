@@ -14,7 +14,7 @@
 | `ax1800/plugin-catalog.md` | 可编译插件清单：用途、依赖、注意事项 |
 | `ax1800/config/device.config` | 机型、版本串、中文默认设置、主题 |
 | `ax1800/config/packages.config` | 选中的软件包（代理/网络/存储/远程/工具/中文） |
-| `ax1800/config/packages-store.config` | iStore（`luci-app-store`）及其 kiddin9 依赖 |
+| `ax1800/config/packages-store.config` | iStore（`luci-app-store`）及其依赖 |
 | `ax1800/config/kernel-dae.config` | dae 需要的内核能力（**只开内核，dae 本体以后单独装**） |
 | `ax1800/config/repos.config` | 运行时 apk 源与 feed 开关 |
 | `ax1800/files/etc/uci-defaults/99-ax1800` | 首启配置：IPv6、NAT1、双频合一 WiFi、时区、主题 |
@@ -49,7 +49,7 @@ Actions → **Build AX1800 12M** → Run workflow：
 | `kernel_size` | `12288` | 12M 表选 12288，原厂 6M 选 6144 |
 | `upload_release` | 勾 | 编译成功后自动发 Release |
 
-流程要点：腾磁盘 → 装依赖 → feeds（先上游、再补 kiddin9 的 iStore 四件套）
+流程要点：腾磁盘 → 装依赖 → feeds（上游 + 官方 iStore 四件套）
 → 用 jerrykuku 的 **argon 3.x** 替换 feed 里的 2.4.7 → 合并配置片段 → `set-kernel-size.sh`
 → `make defconfig` → `make download`（清掉 `dl/` 里 <1KB 的残骸）
 → `make -j || make -j1 || make -j1 V=s` → 校验 FIT 体积与 `hsqs` 边界 → 出 artifact / Release。
@@ -60,11 +60,11 @@ Actions → **Build AX1800 12M** → Run workflow：
 git clone --depth 1 -b 25.12-nss https://github.com/Living877/LibWrt-X-AX1800.git
 cd LibWrt-X-AX1800
 
-grep -v '^src-git kiddin9' feeds.conf.default > feeds.conf
+cp feeds.conf.default feeds.conf
 ./scripts/feeds update -a && ./scripts/feeds install -a
-echo 'src-git kiddin9 https://github.com/kiddin9/op-packages.git' >> feeds.conf
-./scripts/feeds update -p kiddin9
-./scripts/feeds install -p kiddin9 luci-app-store luci-lib-taskd taskd luci-lib-xterm
+echo 'src-git istore https://github.com/linkease/istore.git' >> feeds.conf
+./scripts/feeds update -p istore
+./scripts/feeds install -p istore luci-app-store luci-lib-taskd taskd luci-lib-xterm
 
 ./scripts/feeds uninstall luci-theme-argon luci-app-argon-config || true
 rm -rf package/luci-theme-argon && \
