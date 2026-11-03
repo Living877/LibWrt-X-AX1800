@@ -1,8 +1,8 @@
 #!/bin/sh
 # AX1800 Pro 首启配置（OpenWrt uci-defaults，只执行一次）
 #
-# 覆盖面：主机名/时区、IPv6、WAN（默认 DHCP，以后改 PPPoE）、全锥 NAT1、
-#        双频合一 WiFi（SSID CLI / WPA2+WPA3 混合 / 12345678）、主题。
+# 覆盖面：主机名/时区、LAN 地址、root 密码、IPv6、WAN（默认 DHCP，以后改 PPPoE）、
+#        全锥 NAT1、双频合一 WiFi（SSID CLI / WPA2+WPA3 混合 / 12345678）、主题。
 #
 # 注意：不要用 set -e —— uci 在某个 section 不存在时返回非零，会把整段掐断。
 
@@ -20,21 +20,31 @@ uci add_list system.ntp.server='ntp.aliyun.com' 2>/dev/null
 uci add_list system.ntp.server='cn.pool.ntp.org' 2>/dev/null
 uci commit system
 
-# ---------- 2. 网络：WAN DHCP（以后拨号见 README）----------
-uci set network.wan.proto='dhcp' 2>/dev/null
-uci set network.wan6.proto='dhcpv6' 2>/dev/null
+# ---------- 2. root 密码 ----------
+# 构建时注入；没配 Secret(ROOT_PASSWORD) 时默认 root。
+ROOT_PW='__ROOT_PASSWORD__'
+if [ -n "$ROOT_PW" ]; then
+	printf '%s\n%s\n' "$ROOT_PW" "$ROOT_PW" | passwd root >/dev/null 2>&1 \
+		&& log "root 密码已设置"
+fi
+
+# ---------- 3. 网络：LAN 固定 192.168.1.1，WAN 默认 DHCP ----------
+uci set network.lan.ipaddr='192.168.1.1' 2>/dev/null
+uci set network.lan.netmask='255.255.255.0' 2>/dev/null
 uci set network.lan.ip6assign='60' 2>/dev/null
 uci set network.lan.delegate='1' 2>/dev/null
+uci set network.wan.proto='dhcp' 2>/dev/null
+uci set network.wan6.proto='dhcpv6' 2>/dev/null
 uci commit network
 
-# ---------- 3. IPv6：LAN 侧 RA + DHCPv6 ----------
+# ---------- 4. IPv6：LAN 侧 RA + DHCPv6 ----------
 uci set dhcp.lan.dhcpv6='server' 2>/dev/null
 uci set dhcp.lan.ra='server' 2>/dev/null
 uci set dhcp.lan.ra_flags='managed-config other-config' 2>/dev/null
 uci set dhcp.lan.ra_default='1' 2>/dev/null
 uci commit dhcp
 
-# ---------- 4. 全锥 NAT1 ----------
+# ---------- 5. 全锥 NAT1 ----------
 # LibWrt 的 firewall4 带 fullcone 补丁，fullconenat-nft 提供 kmod-nft-fullcone。
 # IPv6 不走全锥（fullcone6=0），IPv4 打开即为 NAT1。
 uci set firewall.@defaults[0].fullcone='1' 2>/dev/null
@@ -44,7 +54,7 @@ uci set firewall.@defaults[0].flow_offloading='0' 2>/dev/null
 uci set firewall.@defaults[0].flow_offloading_hw='0' 2>/dev/null
 uci commit firewall
 
-# ---------- 5. 无线：双频合一 ----------
+# ---------- 6. 无线：双频合一 ----------
 # 首次开机会话里 /etc/config/wireless 可能还没生成，先让 wifi 脚本补出来
 [ -f /etc/config/wireless ] || wifi config >/dev/null 2>&1
 
@@ -85,16 +95,16 @@ while uci -q get "wireless.@wifi-iface[$i]" >/dev/null 2>&1; do
 done
 uci commit wireless
 
-# ---------- 6. LuCI / 主题 ----------
+# ---------- 7. LuCI / 主题 ----------
 uci set luci.main.mediaurlbase='/luci-static/argon' 2>/dev/null
 uci set luci.main.lang='zh-cn' 2>/dev/null
 uci commit luci
 
-# ---------- 7. 应用 ----------
+# ---------- 8. 应用 ----------
 wifi reload >/dev/null 2>&1 || wifi up >/dev/null 2>&1
 /etc/init.d/firewall restart >/dev/null 2>&1
 /etc/init.d/dnsmasq restart >/dev/null 2>&1
 
 touch "$MARK"
-log "首启配置完成：IPv6 开启 / NAT1 / SSID CLI / WPA2+WPA3 混合"
+log "首启配置完成：192.168.1.1 / IPv6 / NAT1 / SSID CLI / WPA2+WPA3 混合"
 exit 0
