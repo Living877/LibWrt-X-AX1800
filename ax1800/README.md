@@ -1,14 +1,25 @@
-# AX1800（京东云亚瑟 Pro）构建档案
+# LibWrt X AX1800
 
-这台机器的硬件、分区、刷机、定制与插件选择都在这里，供人和智能体直接阅读。
+京东云亚瑟 AX1800 Pro（IPQ6000 / `ipq6018-jdcloud_re-ss-01`）的自编固件。
+底座是 [LiBwrt/LibWrt](https://github.com/LiBwrt/LibWrt) `25.12-nss`（apk 包管理），本仓库是它的 fork，
+所有定制都放在 `ax1800/` 下，不动上游源码。
 
-| 文件 | 内容 |
+---
+
+## 文件
+
+| 路径 | 内容 |
 |---|---|
-| [device-partitions.md](device-partitions.md) | **设备与分区事实底稿**：机型/SoC/运存、eMMC 28 项分区逐条、6M/12M 两个边界、判断固件布局的两条 `od`、GPT 备份表修复、`p27` 数据盘、刷机顺序、备份 MD5 与恢复命令 |
-| [plugin-catalog.md](plugin-catalog.md) | 可编译插件清单：每个包干什么用、依赖、哪些旧固件有、哪些别装 |
-| [config/kernel-dae.config](config/kernel-dae.config) | dae 需要的**内核**符号（BTF / XDP / kprobe / bpf 事件）。**只开内核，dae 本体以后单独装** |
-| [config/packages-store.config](config/packages-store.config) | iStore（`luci-app-store`）及其 kiddin9 依赖 |
-| [scripts/set-kernel-size.sh](scripts/set-kernel-size.sh) | 把 `KERNEL_SIZE` 改成 12288k（**本机是 12M 分区表，必须用**） |
+| `ax1800/device-partitions.md` | **设备与分区事实底稿**：eMMC 28 项分区、设备号换算、6M/12M 边界、GPT 修复、`p27` 数据盘、刷机顺序、备份 MD5 与恢复 |
+| `ax1800/plugin-catalog.md` | 可编译插件清单：用途、依赖、注意事项 |
+| `ax1800/config/device.config` | 机型、版本串、中文默认设置、主题 |
+| `ax1800/config/packages.config` | 选中的软件包（代理/网络/存储/远程/工具/中文） |
+| `ax1800/config/packages-store.config` | iStore（`luci-app-store`）及其 kiddin9 依赖 |
+| `ax1800/config/kernel-dae.config` | dae 需要的内核能力（**只开内核，dae 本体以后单独装**） |
+| `ax1800/config/repos.config` | 运行时 apk 源与 feed 开关 |
+| `ax1800/files/etc/uci-defaults/99-ax1800` | 首启配置：IPv6、NAT1、双频合一 WiFi、时区、主题 |
+| `ax1800/scripts/set-kernel-size.sh` | 内核分区 6144k → 12288k（12M 表必须） |
+| `.github/workflows/build.yml` | GitHub Actions 构建流程 |
 
 ---
 
@@ -16,107 +27,139 @@
 
 | 项 | 值 |
 |---|---|
-| 机型 | 京东云亚瑟 **AX1800 Pro**，`ipq6018-jdcloud_re-ss-01` |
-| SoC | 高通 IPQ6000（qualcommax / ipq60xx），ath11k 无线，NSS 硬件加速 |
-| 运存 | **1 GiB（硬改）**；DTS 仍叫 `ipq6018-512m.dtsi`，真实容量由 CDT 决定；`free` 显示 ~878 MiB 正常 |
+| 机型 | 京东云亚瑟 AX1800 Pro，`ipq6018-jdcloud_re-ss-01` |
+| SoC | IPQ6000（qualcommax / ipq60xx），ath11k + NSS 硬件加速 |
+| 运存 | **1 GiB（硬改）**，`free` 显示 ~878 MiB 正常（Q6 保留区 85 MiB） |
 | eMMC | 30,212,096 扇区 = 14.41 GiB，扇区 512 B |
-| 分区表 | GPT；**12M 布局**：`0:HLOS` 12 MiB、rootfs 2 GiB、`p27` 数据盘 11.42 GiB |
-| U-Boot | chenxin527 版 `2016.01 (Dec 23 2024)`；网页只有 `/firmware.html`、`/ptable.html`、`/backup.html` 等，**没有** `/img.html`、`/big.html`、`/uimage.html` |
+| 分区表 | GPT，**12M 布局**：`0:HLOS` 12 MiB、rootfs 2 GiB、`p27` 数据盘 11.42 GiB |
+| U-Boot | chenxin527 版；网页只有 `/firmware.html`、`/ptable.html`、`/backup.html` 等 |
 
-分区细节、设备号换算（`mmcblk0pN` 的 N = 表里 `#` − 1）、偏移、备份恢复命令全在
-[device-partitions.md](device-partitions.md)，改动分区前必须先看。
+分区与刷机细节见 [ax1800/device-partitions.md](ax1800/device-partitions.md)。
 
 ---
 
-## 构建（LibWrt 25.12-nss 底座）
+## 构建
+
+### GitHub Actions（推荐）
+
+Actions → **Build AX1800 12M** → Run workflow：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `kernel_size` | `12288` | 12M 表选 12288，原厂 6M 选 6144 |
+| `upload_release` | 勾 | 编译成功后自动发 Release |
+
+流程要点：腾磁盘 → 装依赖 → feeds（先上游、再补 kiddin9 的 iStore 四件套）
+→ 用 jerrykuku 的 **argon 3.x** 替换 feed 里的 2.4.7 → 合并配置片段 → `set-kernel-size.sh`
+→ `make defconfig` → `make download`（清掉 `dl/` 里 <1KB 的残骸）
+→ `make -j || make -j1 || make -j1 V=s` → 校验 FIT 体积与 `hsqs` 边界 → 出 artifact / Release。
+
+### 本地
 
 ```sh
 git clone --depth 1 -b 25.12-nss https://github.com/Living877/LibWrt-X-AX1800.git
 cd LibWrt-X-AX1800
 
-./scripts/feeds update -a
-./scripts/feeds install -a
-# iStore 来自 kiddin9 feed：只装这几个，别整包安装（会顶掉核心包）
+grep -v '^src-git kiddin9' feeds.conf.default > feeds.conf
+./scripts/feeds update -a && ./scripts/feeds install -a
+echo 'src-git kiddin9 https://github.com/kiddin9/op-packages.git' >> feeds.conf
+./scripts/feeds update -p kiddin9
 ./scripts/feeds install -p kiddin9 luci-app-store luci-lib-taskd taskd luci-lib-xterm
 
-# 1) 12M：把内核分区从 6144k 改成 12288k（不执行这步，产物刷不进本机）
-sh ax1800/scripts/set-kernel-size.sh
+./scripts/feeds uninstall luci-theme-argon luci-app-argon-config || true
+rm -rf package/luci-theme-argon && \
+  git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon package/luci-theme-argon
 
-# 2) 设备选择
-cat >> .config <<'EOF'
-CONFIG_TARGET_qualcommax=y
-CONFIG_TARGET_qualcommax_ipq60xx=y
-CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y
-EOF
-
-# 3) iStore（要编进固件）
-cat ax1800/config/packages-store.config >> .config
-
-# 4) dae：只开内核能力（本体以后另装）
-cat ax1800/config/kernel-dae.config >> .config
+cat ax1800/config/device.config ax1800/config/repos.config \
+    ax1800/config/packages.config ax1800/config/packages-store.config \
+    ax1800/config/kernel-dae.config >> .config
+sh ax1800/scripts/set-kernel-size.sh 12288
+mkdir -p files && cp -Rf ax1800/files/. files/
 
 make defconfig
-make download -j8
+make download -j$(nproc) && find dl -size -1024c -delete
 make -j$(nproc)
 ```
 
-`kiddin9` feed 需要先加进 `feeds.conf.default`（本仓库已加在最后一行）：
-
-```
-src-git kiddin9 https://github.com/kiddin9/op-packages.git
-```
-
-放在最后面是有意的：`scripts/feeds` 先装的包会被标记，后面同名包默认跳过，
-所以上游 `luci` / `packages` 永远优先，kiddin9 只补它们没有的（iStore、taskd 等）。
-
-产物在 `bin/targets/qualcommax/ipq60xx/`：
-
-- `*squashfs-factory.bin` → U-Boot `/firmware.html`
-- `*squashfs-sysupgrade.bin` → LuCI 升级或 `sysupgrade`
-
-**12M 与 6M 不能互刷**；`sysupgrade` 不检查分区边界。
+产物：`bin/targets/qualcommax/ipq60xx/*factory.bin`（U-Boot `/firmware.html`）、`*sysupgrade.bin`（LuCI 升级）。
 
 ---
 
-## iStore
+## 首启做了什么
 
-`luci-app-store` 不在 immortalwrt 主源里，来自 `kiddin9/op-packages`。
-依赖：`+curl +tar +libuci-lua +mount-utils +luci-lib-taskd`，
-而 `luci-lib-taskd` 又依赖 `+luci-lib-xterm +taskd` —— 这四个包已在
-`config/packages-store.config` 里列好。
+`ax1800/files/etc/uci-defaults/99-ax1800` 在第一次开机时执行一次：
 
----
-
-## dae（现在只开内核）
-
-dae 的依赖是 `@HAS_BPF_TOOLCHAIN +@NEED_BPF_TOOLCHAIN`，要求内核带 BTF，并需要 LLVM/BPF 工具链。
-本轮只把内核能力打开，`dae` / `luci-app-dae` 本体以后单独安装。
-
-`config/kernel-dae.config` 打开的内核能力：
-
-| 符号 | 作用 |
+| 项 | 设置 |
 |---|---|
-| `CONFIG_KERNEL_DEBUG_INFO` + `DEBUG_INFO_BTF` | 生成 `/sys/kernel/btf/vmlinux`，dae 的 CO-RE 靠它 |
-| `CONFIG_KERNEL_DEBUG_INFO_REDUCED`（显式关掉） | 它 `default y`，而 BTF `depends on !REDUCED`，不关永远选不上 |
-| `CONFIG_KERNEL_XDP_SOCKETS` | dae 的 `DEPENDS` 用 `@KERNEL_XDP_SOCKETS` 硬卡 |
-| `CONFIG_KERNEL_KPROBES` / `KPROBE_EVENTS` / `BPF_EVENTS` | 观测页与 trace（不开也能跑代理） |
+| 主机名 / 时区 | `OpenWrt` / `Asia/Shanghai`，NTP 走阿里云 + cn.pool |
+| IPv6 | LAN `ip6assign=60` + RA/DHCPv6 server（`managed-config other-config`）；`wan6=dhcpv6` |
+| WAN | **默认 DHCP**（以后拨号见下） |
+| 全锥 NAT | `firewall.@defaults[0].fullcone=1`（NAT1），`fullcone6=0` |
+| WiFi | 双频合一，SSID `CLI`，加密 `sae-mixed`（WPA2-PSK + WPA3-SAE 混合），密码 `12345678` |
+| 无线参数 | 2.4G `HT20`、5G `HE80`、`channel=auto`、`country=CN`、11k/11v 开、11r 关、PMF 可选 |
+| 卸载 | `flow_offloading` 保持关闭（代理要接管流量；硬件加速由 NSS 负责） |
+| 主题 | argon（`/luci-static/argon`） |
 
-BTF 段在 arm64 上未压缩约 5 MiB、进 FIT 后 +1.5~2 MiB —— **6 MiB 分区放不下，只有 12M 能带 dae**。
+### 以后改拨号
 
-以后要装 dae 时，确认两件事：
+```sh
+uci set network.wan.proto='pppoe'
+uci set network.wan.username='宽带账号'
+uci set network.wan.password='宽带密码'
+uci set network.wan.ipv6='1'
+uci commit network && /etc/init.d/network restart
+```
 
-1. `make defconfig` 后 `CONFIG_HAS_BPF_TOOLCHAIN` 被选中（menuconfig → Advanced configuration → LLVM/BPF 工具链）；
-2. 编出来的内核 `.config`（`build_dir/target-*/linux-*/linux-*/.config`）里真的有
-   `DEBUG_INFO_BTF=y` 和 `XDP_SOCKETS=y` —— 配置里写了不等于没被 depends 丢掉。
+光猫桥接时 DHCP 拿不到地址，这一步不做就上不了网。
+
+---
+
+## 全锥 NAT
+
+LibWrt 自带 `firewall4` 的 fullcone 补丁和 `fullconenat-nft`（提供 `kmod-nft-fullcone`），
+不需要 turboacc。首启脚本已写死 `fullcone=1`，验证：
+
+```sh
+uci get firewall.@defaults[0].fullcone     # 1
+lsmod | grep nft_fullcone                  # 有模块
+```
+
+---
+
+## dae
+
+**只开了内核能力**（BTF / XDP / kprobe / bpf 事件），dae 与 luci-app-dae 本体以后单独装。
+BTF 段在 arm64 上约 5 MiB，进 FIT 后 +1.5~2 MiB —— 6 MiB 分区放不下，只有 12M 能带。
+
+以后装 dae 时确认 `CONFIG_HAS_BPF_TOOLCHAIN` 与内核 `.config` 里的
+`DEBUG_INFO_BTF=y` / `XDP_SOCKETS=y` 真的生效（配置里写了不等于没被 depends 丢掉）。
+
+---
+
+## 软件源
+
+固件是 **apk**（LibWrt 默认 `CONFIG_USE_APK=y`），内置 `openwrt-25.12.pem` 与 `immortalwrt-25.12.pem` 两把钥匙。
+
+| 源 | 包数（aarch64_cortex-a53，2026-11-03 实测） |
+|---|---:|
+| **immortalwrt 25.12-SNAPSHOT**（已选） | **10,157**（base 761 / packages 4753 / luci 3719 / routing 56 / telephony 868） |
+| openwrt `releases/packages-25.12` | 8,596（含 video 60） |
+| openwrt snapshots | 9,798 |
+| `dl.openwrt.ai` | 只有 `.ipk`，apk 固件用不了 |
+
+两个硬约束：
+
+1. **kmod 不能在线装** —— apk 对内核模块卡 `kernel (= 完整版本串)`，自编固件的 vermagic 与任何官方源都对不上。
+2. **`nss_packages` / `sqm_scripts_nss` 没有在线源** —— CI 现编，`scripts/feeds` 本来就默认不放进运行时仓库。
 
 ---
 
 ## 已知坑
 
-- 路由器系统里没有 `od`、`timeout`、`partx`、`blockdev`、`sgdisk`、`fdisk`；有 `parted`、`blkid`、`mkfs.ext4`
+- 路由器上没有 `od`、`timeout`、`partx`、`blockdev`、`sgdisk`、`fdisk`；有 `parted`、`blkid`、`mkfs.ext4`
 - busybox ash **不认 `$'...'`**
-- 双频合一没有 band steering：OpenWrt 原生只做"同名"，智能插座会赖在 2.4G，要引导得装 `luci-app-usteer`
-- 跑代理前建议关硬件卸载，否则部分流量绕过 TUN/TPROXY
-- **别装 `owut` / `luci-app-attendedsysupgrade`**：ASU 用自己的 ImageBuilder 重建，源码级定制全丢，且 `kmod-qca-nss-ecm` / `kmod-ath11k-ahb` 官方源里没有
-- `luci-i18n-*` 是 HIDDEN 符号，直接写 `.config` 会被 `defconfig` 静默丢弃，要在 menuconfig 里勾
-- 往 DIY 覆盖层加文件前，先确认该路径没有第二个包在装 —— apk 会因为重复文件归属整轮失败
+- **6M / 12M 固件不能互刷**，`sysupgrade` 不检查分区边界
+- **别装 `owut` / `luci-app-attendedsysupgrade`**：ASU 用官方 ImageBuilder 重建，定制全丢，且缺 NSS 内核模块
+- `luci-i18n-*` 是 HIDDEN 符号，直接写 `.config` 会被 `defconfig` 静默丢弃
+- 跑代理前别开软件卸载（`flow_offloading`），否则部分流量绕过 TUN/TPROXY
+- 双频合一要真正引导频段得靠 `luci-app-usteer`（已编入）
