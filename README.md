@@ -92,11 +92,11 @@ Actions → **Build AX1800 12M** → Run workflow，`kernel_size` 默认 `12288`
 git clone --depth 1 -b 25.12-nss https://github.com/Living877/LibWrt-X-AX1800.git
 cd LibWrt-X-AX1800
 
-grep -v '^src-git kiddin9' feeds.conf.default > feeds.conf
+cp feeds.conf.default feeds.conf
 ./scripts/feeds update -a && ./scripts/feeds install -a
-echo 'src-git kiddin9 https://github.com/kiddin9/op-packages.git' >> feeds.conf
-./scripts/feeds update -p kiddin9
-./scripts/feeds install -p kiddin9 luci-app-store luci-lib-taskd taskd luci-lib-xterm
+echo 'src-git istore https://github.com/linkease/istore.git' >> feeds.conf
+./scripts/feeds update -p istore
+./scripts/feeds install -p istore luci-app-store luci-lib-taskd taskd luci-lib-xterm
 
 ./scripts/feeds uninstall luci-theme-argon luci-app-argon-config || true
 rm -rf package/luci-theme-argon
