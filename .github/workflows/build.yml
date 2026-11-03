@@ -38,11 +38,17 @@ jobs:
     timeout-minutes: 350
     steps:
       - name: 腾磁盘
-        uses: easimon/maximize-build-space@master
-        with:
-          swap-size-mb: 2048
-          temp-reserve-mb: 100
-          root-reserve-mb: 1024
+        # 不用 easimon/maximize-build-space：它要重做 LVM，实测把根分区缩到装不下
+        # apt 索引（Write error 28: No space left on device）。runner 原始 / 有 80G+ 可用，
+        # 删掉镜像里用不到的 SDK 就够了。
+        run: |
+          set -eu
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc                       /usr/local/share/boost /usr/local/.ghcup /opt/az 2>/dev/null || true
+          sudo apt-get clean
+          avail=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+          echo "根分区可用: ${avail}G"
+          [ "$avail" -ge 25 ] || { echo "::error::根分区只剩 ${avail}G，OpenWrt 至少需要 25G"; exit 1; }
 
       - name: 检出源码
         uses: actions/checkout@v4
