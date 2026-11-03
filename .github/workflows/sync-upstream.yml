@@ -1,0 +1,85 @@
+name: Sync upstream
+
+# 每天 03:00（北京时间）检查上游 LiBwrt/LibWrt 25.12-nss：
+#   - 上游 HEAD 与 .upstream-state 里记录的「已构建版本」相同 → 什么都不做
+#   - 不同 → 把上游 merge 进来（不是 repo sync，避免冲掉 ax1800/ 下的提交）→ 触发构建
+#
+# 构建成功时 build.yml 会写回 .upstream-state；构建失败则不写，于是第二天还会重试，
+# 不会因为一次失败就把上游版本漏掉。
+
+on:
+  schedule:
+    - cron: '0 19 * * *'      # 19:00 UTC = 次日 03:00 CST
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 比对上游
+        id: up
+        run: |
+          set -eu
+          up=$(git ls-remote https://github.com/LiBwrt/LibWrt.git refs/heads/25.12-nss | awk '{print $1}')
+          [ -n "$up" ] || { echo "::error::取不到上游 HEAD"; exit 1; }
+          state=$(cat .upstream-state 2>/dev/null || echo "")
+          echo "sha=$up" >> "$GITHUB_OUTPUT"
+          if [ "$up" = "$state" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "上游未变（${up:0:8}），跳过"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "上游 ${up:0:8} ≠ 已构建 ${state:0:8}，需要合并"
+          fi
+
+      - name: 合并上游
+        if: steps.up.outputs.changed == 'true'
+        run: |
+          set -eu
+          git remote add upstream https://github.com/LiBwrt/LibWrt.git 2>/dev/null || true
+          # 只取提交与树，不拉 blob：LibWrt 全量快照有几百 MB，每天拉一次不划算
+          git fetch --filter=blob:none --no-tags upstream 25.12-nss
+          if git merge-base --is-ancestor FETCH_HEAD HEAD; then
+            echo "本地已包含上游提交（上次合并过但没构建成功），直接重新构建"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            if ! git merge --no-edit FETCH_HEAD; then
+              # 唯一预期内的冲突是根 README（我们改写过它）；保留本地版本。
+              # 其它文件冲突说明上游动了我们也在改的东西，交给人工处理。
+              conflicts=$(git diff --name-only --diff-filter=U)
+              if [ "$conflicts" = "README.md" ]; then
+                echo "README.md 冲突：保留本地版本"
+                git checkout --ours README.md
+                git add README.md
+                git commit --no-edit
+              else
+                echo "::error::合并冲突，需要人工处理：$conflicts"
+                exit 1
+              fi
+            fi
+            git push origin HEAD:25.12-nss
+            echo "已合并并推送"
+          fi
+
+      - name: 触发构建
+        if: steps.up.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run build.yml --ref 25.12-nss -f kernel_size=12288
+          sleep 5
+          gh run list --workflow build.yml --limit 1 --json databaseId,status -q '.[] | "已派发 \(.databaseId) \(.status)"'
