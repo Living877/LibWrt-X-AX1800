@@ -68,19 +68,19 @@ jobs:
             qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip \
             vim wget xmlto xxd zlib1g-dev python3-setuptools
 
-      - name: 更新 feeds（分两步，避免 kiddin9 抢核心包）
+      - name: 更新 feeds（上游 + 官方 iStore 源）
         run: |
           set -eu
-          # 1) 先只用上游 feeds：kiddin9 有 900 多个包、和上游重名 200 多个，
-          #    整包 install 会顶掉 luci-base 等核心包（旧仓库踩过）。
-          grep -v '^src-git kiddin9' feeds.conf.default > feeds.conf
+          # iStore 用官方源 linkease/istore（不是 kiddin9 的镜像）：只装四个包。
+          # 官方那份 luci-app-store 没有 @(x86_64||aarch64) 架构限制，
+          # 而 kiddin9 的副本有，且在本树上它的 Kconfig 符号完全没出现（run 41569582487）。
+          cp feeds.conf.default feeds.conf
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-          # 2) 再把 kiddin9 补进来，只装 iStore 需要的四个包（源码 feed，编出来是 apk）
-          echo 'src-git kiddin9 https://github.com/kiddin9/op-packages.git' >> feeds.conf
-          ./scripts/feeds update -p kiddin9
-          ./scripts/feeds install -p kiddin9 luci-app-store luci-lib-taskd taskd luci-lib-xterm
+          echo 'src-git istore https://github.com/linkease/istore.git' >> feeds.conf
+          ./scripts/feeds update -p istore
+          ./scripts/feeds install -p istore luci-app-store luci-lib-taskd taskd luci-lib-xterm
 
           # 3) 主题用 jerrykuku 的 argon 3.x（feed 里是 2.4.7，且 3.x 已把设置页并进主题包）
           ./scripts/feeds uninstall luci-theme-argon luci-app-argon-config || true
@@ -117,12 +117,18 @@ jobs:
             echo "===== 诊断：iStore 为什么没被选中 ====="
             echo '--- .config 里的 store/taskd ---'
             grep -inE 'store|taskd|xterm' .config | head -10
-            echo '--- package/feeds/kiddin9 ---'
-            ls package/feeds/kiddin9 2>/dev/null | grep -E 'store|taskd|xterm' || echo '(没有)'
+            echo '--- package/feeds/istore ---'
+            ls package/feeds/istore 2>/dev/null | grep -E 'store|taskd|xterm' || echo '(没有)'
             echo '--- tmp/info 元数据 ---'
             ls tmp/info 2>/dev/null | grep -iE 'store|taskd|xterm' || echo '(没有)'
             echo '--- 架构符号 ---'
             grep -E '^CONFIG_(aarch64|x86_64|ARCH_64BIT|arm)=' .config | head -5
+            echo '--- tmp/.config-package.in 里的 store ---'
+            grep -n -A8 'config PACKAGE_luci-app-store' tmp/.config-package.in 2>/dev/null | head -20 || echo '(没有)'
+            echo '--- 对照 luci-lib-taskd ---'
+            grep -n -A4 'config PACKAGE_luci-lib-taskd' tmp/.config-package.in 2>/dev/null | head -10 || echo '(没有)'
+            echo '--- 依赖版本 ---'
+            grep -hE 'PKG_VERSION|LUCI_EXTRA_DEPENDS' feeds/istore/luci/luci-app-store/Makefile feeds/istore/luci/luci-lib-taskd/Makefile 2>/dev/null
             echo '::error::iStore 没被选中'
             exit 1
           fi
