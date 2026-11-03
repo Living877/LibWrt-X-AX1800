@@ -1,0 +1,100 @@
+#!/bin/sh
+# AX1800 Pro 首启配置（OpenWrt uci-defaults，只执行一次）
+#
+# 覆盖面：主机名/时区、IPv6、WAN（默认 DHCP，以后改 PPPoE）、全锥 NAT1、
+#        双频合一 WiFi（SSID CLI / WPA2+WPA3 混合 / 12345678）、主题。
+#
+# 注意：不要用 set -e —— uci 在某个 section 不存在时返回非零，会把整段掐断。
+
+MARK=/etc/config/.ax1800-inited
+[ -f "$MARK" ] && exit 0
+
+log() { echo "[ax1800] $*"; }
+
+# ---------- 1. 系统 ----------
+uci set system.@system[0].hostname='OpenWrt' 2>/dev/null
+uci set system.@system[0].timezone='CST-8' 2>/dev/null
+uci set system.@system[0].zonename='Asia/Shanghai' 2>/dev/null
+uci -q delete system.ntp.server 2>/dev/null
+uci add_list system.ntp.server='ntp.aliyun.com' 2>/dev/null
+uci add_list system.ntp.server='cn.pool.ntp.org' 2>/dev/null
+uci commit system
+
+# ---------- 2. 网络：WAN DHCP（以后拨号见 README）----------
+uci set network.wan.proto='dhcp' 2>/dev/null
+uci set network.wan6.proto='dhcpv6' 2>/dev/null
+uci set network.lan.ip6assign='60' 2>/dev/null
+uci set network.lan.delegate='1' 2>/dev/null
+uci commit network
+
+# ---------- 3. IPv6：LAN 侧 RA + DHCPv6 ----------
+uci set dhcp.lan.dhcpv6='server' 2>/dev/null
+uci set dhcp.lan.ra='server' 2>/dev/null
+uci set dhcp.lan.ra_flags='managed-config other-config' 2>/dev/null
+uci set dhcp.lan.ra_default='1' 2>/dev/null
+uci commit dhcp
+
+# ---------- 4. 全锥 NAT1 ----------
+# LibWrt 的 firewall4 带 fullcone 补丁，fullconenat-nft 提供 kmod-nft-fullcone。
+# IPv6 不走全锥（fullcone6=0），IPv4 打开即为 NAT1。
+uci set firewall.@defaults[0].fullcone='1' 2>/dev/null
+uci set firewall.@defaults[0].fullcone6='0' 2>/dev/null
+# 代理要接管流量时不能开软件卸载，这里保持关闭（硬件加速由 NSS 负责）
+uci set firewall.@defaults[0].flow_offloading='0' 2>/dev/null
+uci set firewall.@defaults[0].flow_offloading_hw='0' 2>/dev/null
+uci commit firewall
+
+# ---------- 5. 无线：双频合一 ----------
+# 首次开机会话里 /etc/config/wireless 可能还没生成，先让 wifi 脚本补出来
+[ -f /etc/config/wireless ] || wifi config >/dev/null 2>&1
+
+i=0
+while uci -q get "wireless.@wifi-device[$i]" >/dev/null 2>&1; do
+	band=$(uci -q get "wireless.@wifi-device[$i].band")
+	uci set "wireless.@wifi-device[$i].disabled='0'" 2>/dev/null
+	uci set "wireless.@wifi-device[$i].country='CN'" 2>/dev/null
+	uci set "wireless.@wifi-device[$i].channel='auto'" 2>/dev/null
+	case "$band" in
+		2g)
+			# 2.4G 只跑 HT20：40MHz 在拥挤环境里反而更慢
+			uci set "wireless.@wifi-device[$i].htmode='HT20'" 2>/dev/null
+			uci set "wireless.@wifi-device[$i].noscan='0'" 2>/dev/null
+			;;
+		5g)
+			# 5G 跑 HE80：160MHz 在 IPQ6000 上受 DFS/干扰影响，实测更差
+			uci set "wireless.@wifi-device[$i].htmode='HE80'" 2>/dev/null
+			;;
+	esac
+	i=$((i + 1))
+done
+
+i=0
+while uci -q get "wireless.@wifi-iface[$i]" >/dev/null 2>&1; do
+	uci set "wireless.@wifi-iface[$i].ssid='CLI'" 2>/dev/null
+	uci set "wireless.@wifi-iface[$i].key='12345678'" 2>/dev/null
+	# WPA2-PSK + WPA3-SAE 混合；需要 wpad-openssl（目标默认，支持 SAE）
+	uci set "wireless.@wifi-iface[$i].encryption='sae-mixed'" 2>/dev/null
+	# 11k/11v 开（配合 usteer 做频段引导），11r 关（单机用不上，老设备还可能连不上）
+	uci set "wireless.@wifi-iface[$i].ieee80211k='1'" 2>/dev/null
+	uci set "wireless.@wifi-iface[$i].bss_transition='1'" 2>/dev/null
+	uci set "wireless.@wifi-iface[$i].ieee80211r='0'" 2>/dev/null
+	# SAE 需要 PMF 能力，用可选（1）而不是强制（2），兼容老客户端
+	uci set "wireless.@wifi-iface[$i].ieee80211w='1'" 2>/dev/null
+	uci set "wireless.@wifi-iface[$i].isolate='0'" 2>/dev/null
+	i=$((i + 1))
+done
+uci commit wireless
+
+# ---------- 6. LuCI / 主题 ----------
+uci set luci.main.mediaurlbase='/luci-static/argon' 2>/dev/null
+uci set luci.main.lang='zh-cn' 2>/dev/null
+uci commit luci
+
+# ---------- 7. 应用 ----------
+wifi reload >/dev/null 2>&1 || wifi up >/dev/null 2>&1
+/etc/init.d/firewall restart >/dev/null 2>&1
+/etc/init.d/dnsmasq restart >/dev/null 2>&1
+
+touch "$MARK"
+log "首启配置完成：IPv6 开启 / NAT1 / SSID CLI / WPA2+WPA3 混合"
+exit 0
