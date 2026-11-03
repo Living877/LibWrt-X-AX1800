@@ -100,6 +100,17 @@ uci set luci.main.mediaurlbase='/luci-static/argon' 2>/dev/null
 uci set luci.main.lang='zh-cn' 2>/dev/null
 uci commit luci
 
+# ---------- 7.5 守护进程 ----------
+# usteer 的 LuCI 页面调的是它自己的 ubus 对象（usteer.remote_hosts …），
+# 守护进程没起来就会报 "No related RPC reply"。
+if [ -x /etc/init.d/usteer ]; then
+	/etc/init.d/usteer enable  >/dev/null 2>&1
+	/etc/init.d/usteer restart >/dev/null 2>&1
+fi
+# luci.ddns / luci.getDHCPLeases 这些对象来自 /usr/libexec/rpcd/ 下的脚本，
+# 首次开机后重新加载一次，避免页面报 RPC 无响应。
+/etc/init.d/rpcd reload >/dev/null 2>&1
+
 # ---------- 8. 应用 ----------
 wifi reload >/dev/null 2>&1 || wifi up >/dev/null 2>&1
 /etc/init.d/firewall restart >/dev/null 2>&1
