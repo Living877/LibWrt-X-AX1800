@@ -1,0 +1,197 @@
+name: Build AX1800 12M
+
+# 本仓库就是 LibWrt 25.12-nss 源码树（fork），构建时直接编当前 commit。
+# 配置全部在 ax1800/ 下，仓库根目录的 .github 与 ax1800/ 不参与 OpenWrt 构建。
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_size:
+        description: '内核分区大小：12288=12M（本机），6144=原厂6M'
+        type: choice
+        options:
+          - '12288'
+          - '6144'
+        default: '12288'
+      upload_release:
+        description: '编译成功后发 Release'
+        type: boolean
+        default: true
+  push:
+    branches: [25.12-nss]
+    paths:
+      - 'ax1800/**'
+      - '.github/workflows/build.yml'
+
+# 同一时刻只跑一个构建；新的排队而不是掐掉正在跑的
+concurrency:
+  group: build-ax1800
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    steps:
+      - name: 腾磁盘
+        uses: easimon/maximize-build-space@master
+        with:
+          swap-size-mb: 2048
+          temp-reserve-mb: 100
+          root-reserve-mb: 1024
+
+      - name: 检出源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update -qq
+          sudo -E apt-get -y install --no-install-recommends \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext \
+            gcc-multilib g++-multilib genisoimage git gperf haveged help2man intltool libc6-dev-i386 \
+            libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+            libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool \
+            lrzsz msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip \
+            qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip \
+            vim wget xmlto xxd zlib1g-dev python3-setuptools
+
+      - name: 更新 feeds（分两步，避免 kiddin9 抢核心包）
+        run: |
+          set -eu
+          # 1) 先只用上游 feeds：kiddin9 有 900 多个包、和上游重名 200 多个，
+          #    整包 install 会顶掉 luci-base 等核心包（旧仓库踩过）。
+          grep -v '^src-git kiddin9' feeds.conf.default > feeds.conf
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+          # 2) 再把 kiddin9 补进来，只装 iStore 需要的四个包
+          echo 'src-git kiddin9 https://github.com/kiddin9/op-packages.git' >> feeds.conf
+          ./scripts/feeds update -p kiddin9
+          ./scripts/feeds install -p kiddin9 luci-app-store luci-lib-taskd taskd luci-lib-xterm
+
+          # 3) 主题用 jerrykuku 的 argon 3.x（feed 里是 2.4.7，且 3.x 已把设置页并进主题包）
+          ./scripts/feeds uninstall luci-theme-argon luci-app-argon-config || true
+          rm -rf package/luci-theme-argon package/luci-app-argon-config
+          git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon package/luci-theme-argon
+          test -f package/luci-theme-argon/Makefile
+          grep -q 'PKG_VERSION:=3' package/luci-theme-argon/Makefile
+
+      - name: 生成 .config
+        env:
+          KS: ${{ inputs.kernel_size || '12288' }}
+        run: |
+          set -eu
+          cat ax1800/config/device.config >> .config
+          cat ax1800/config/repos.config >> .config
+          cat ax1800/config/packages.config >> .config
+          cat ax1800/config/packages-store.config >> .config
+          cat ax1800/config/kernel-dae.config >> .config
+
+          # 12M：KERNEL_SIZE 默认 6144k，本机分区表是 12M
+          sh ax1800/scripts/set-kernel-size.sh "${KS:-12288}"
+
+          # 首启配置（WiFi / IPv6 / NAT1 / 时区）作为 rootfs 覆盖层
+          mkdir -p files
+          cp -Rf ax1800/files/. files/
+          test -f files/etc/uci-defaults/99-ax1800
+
+          make defconfig
+          echo "===== 生效的关键项 ====="
+          grep -E '^CONFIG_(TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01|PACKAGE_luci-theme-argon|PACKAGE_luci-app-store|PACKAGE_luci-app-usteer|PACKAGE_luci-app-autoreboot|PACKAGE_kmod-nft-fullcone|KERNEL_DEBUG_INFO_BTF|KERNEL_XDP_SOCKETS|VERSION_REPO)' .config || true
+          # luci-theme-argon 必须真的被选中，否则会静默回落到默认主题
+          grep -q '^CONFIG_PACKAGE_luci-theme-argon=y$' .config \
+            || { echo "::error::argon 3.x 没被选中（可能和 feed 里的包名冲突）"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci-app-store=y$' .config \
+            || { echo "::error::iStore 没被选中"; exit 1; }
+
+      - name: 缓存 staging_dir
+        uses: actions/cache@v4
+        with:
+          key: staging-${{ github.sha }}-${{ inputs.kernel_size || '12288' }}
+          restore-keys: |
+            staging-
+          path: staging_dir
+
+      - name: 刷新缓存时间戳
+        run: |
+          if [ -d staging_dir ]; then
+            find staging_dir -type d -name stamp -not -path '*target*' | while read -r d; do
+              find "$d" -type f -exec touch {} +
+            done
+          fi
+
+      - name: 预下载依赖
+        run: |
+          make download -j"$(nproc)" || make download -j1
+          # dl/ 里 <1KB 的文件是 404 页面留下的残骸，会让后面报 md5 不匹配
+          find dl -type f -size -1024c -delete
+
+      - name: 编译
+        run: |
+          set -o pipefail
+          make -j"$(nproc)" || make -j1 || make -j1 V=s
+
+      - name: 校验产物
+        env:
+          KS: ${{ inputs.kernel_size || '12288' }}
+        run: |
+          set -eu
+          f=$(ls bin/targets/qualcommax/ipq60xx/*jdcloud_re-ss-01-squashfs-factory.bin | head -1)
+          echo "镜像: $f ($(stat -c%s "$f") 字节)"
+          magic=$(od -An -tx1 -N4 "$f" | tr -d ' \n')
+          [ "$magic" = "d00dfeed" ] || { echo "::error::不是 FIT 镜像（$magic）"; exit 1; }
+          fit=$(od -An -tu4 -j4 -N4 --endian=big "$f" | tr -d ' ')
+          lim=$((KS * 1024))
+          echo "内核 FIT: ${fit} 字节 / ${lim} 字节分区"
+          [ "$fit" -lt "$lim" ] || { echo "::error::内核超过 ${KS}k，会写穿 rootfs"; exit 1; }
+          sq=$(od -An -tx1 -j"$lim" -N4 "$f" | tr -d ' \n')
+          [ "$sq" = "68737173" ] || { echo "::error::${KS}k 处不是 hsqs（$sq），内核/rootfs 边界异常"; exit 1; }
+          echo "[+] 边界正确"
+
+          man=$(ls bin/targets/qualcommax/ipq60xx/*jdcloud_re-ss-01.manifest | head -1)
+          echo "manifest: $(wc -l < "$man") 个包"
+          for p in luci-theme-argon luci-app-store luci-app-openclash luci-app-usteer \
+                   luci-app-autoreboot luci-app-samba4 luci-app-diskman kmod-nft-fullcone \
+                   kmod-usb-storage kmod-fs-ntfs3; do
+            grep -q "^$p " "$man" || { echo "::error::固件里没有 $p"; exit 1; }
+          done
+          echo "[+] 关键包都在"
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ax1800-${{ github.run_number }}
+          path: |
+            bin/targets/qualcommax/ipq60xx/*.bin
+            bin/targets/qualcommax/ipq60xx/*.manifest
+            bin/targets/qualcommax/ipq60xx/sha256sums
+          if-no-files-found: error
+
+      - name: 发布 Release
+        if: ${{ inputs.upload_release != false }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KS: ${{ inputs.kernel_size || '12288' }}
+        run: |
+          set -eu
+          tag="ax1800-$(date +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+          body=$(cat <<EOF
+          LibWrt 25.12-nss · 内核 $(grep -oP 'LINUX_KERNEL_HASH-\K[0-9.]+' target/linux/generic/kernel-6.12 || echo 6.12) · ${KS}k 内核分区
+          基于 $(git rev-parse --short HEAD)
+          EOF
+          )
+          gh release create "$tag" \
+            bin/targets/qualcommax/ipq60xx/*factory.bin \
+            bin/targets/qualcommax/ipq60xx/*sysupgrade.bin \
+            bin/targets/qualcommax/ipq60xx/*.manifest \
+            bin/targets/qualcommax/ipq60xx/sha256sums \
+            --title "$tag" --notes "$body"
