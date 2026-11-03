@@ -61,18 +61,18 @@ uci commit firewall
 i=0
 while uci -q get "wireless.@wifi-device[$i]" >/dev/null 2>&1; do
 	band=$(uci -q get "wireless.@wifi-device[$i].band")
-	uci set "wireless.@wifi-device[$i].disabled='0'" 2>/dev/null
-	uci set "wireless.@wifi-device[$i].country='CN'" 2>/dev/null
-	uci set "wireless.@wifi-device[$i].channel='auto'" 2>/dev/null
+	uci set "wireless.@wifi-device[$i].disabled=0" 2>/dev/null
+	uci set "wireless.@wifi-device[$i].country=CN" 2>/dev/null
+	uci set "wireless.@wifi-device[$i].channel=auto" 2>/dev/null
 	case "$band" in
 		2g)
 			# 2.4G 只跑 HT20：40MHz 在拥挤环境里反而更慢
-			uci set "wireless.@wifi-device[$i].htmode='HT20'" 2>/dev/null
-			uci set "wireless.@wifi-device[$i].noscan='0'" 2>/dev/null
+			uci set "wireless.@wifi-device[$i].htmode=HT20" 2>/dev/null
+			uci set "wireless.@wifi-device[$i].noscan=0" 2>/dev/null
 			;;
 		5g)
 			# 5G 跑 HE80：160MHz 在 IPQ6000 上受 DFS/干扰影响，实测更差
-			uci set "wireless.@wifi-device[$i].htmode='HE80'" 2>/dev/null
+			uci set "wireless.@wifi-device[$i].htmode=HE80" 2>/dev/null
 			;;
 	esac
 	i=$((i + 1))
@@ -80,17 +80,17 @@ done
 
 i=0
 while uci -q get "wireless.@wifi-iface[$i]" >/dev/null 2>&1; do
-	uci set "wireless.@wifi-iface[$i].ssid='CLI'" 2>/dev/null
-	uci set "wireless.@wifi-iface[$i].key='12345678'" 2>/dev/null
+	uci set "wireless.@wifi-iface[$i].ssid=CLI" 2>/dev/null
+	uci set "wireless.@wifi-iface[$i].key=12345678" 2>/dev/null
 	# WPA2-PSK + WPA3-SAE 混合；需要 wpad-openssl（目标默认，支持 SAE）
-	uci set "wireless.@wifi-iface[$i].encryption='sae-mixed'" 2>/dev/null
+	uci set "wireless.@wifi-iface[$i].encryption=sae-mixed" 2>/dev/null
 	# 11k/11v 开（配合 usteer 做频段引导），11r 关（单机用不上，老设备还可能连不上）
-	uci set "wireless.@wifi-iface[$i].ieee80211k='1'" 2>/dev/null
-	uci set "wireless.@wifi-iface[$i].bss_transition='1'" 2>/dev/null
-	uci set "wireless.@wifi-iface[$i].ieee80211r='0'" 2>/dev/null
+	uci set "wireless.@wifi-iface[$i].ieee80211k=1" 2>/dev/null
+	uci set "wireless.@wifi-iface[$i].bss_transition=1" 2>/dev/null
+	uci set "wireless.@wifi-iface[$i].ieee80211r=0" 2>/dev/null
 	# SAE 需要 PMF 能力，用可选（1）而不是强制（2），兼容老客户端
-	uci set "wireless.@wifi-iface[$i].ieee80211w='1'" 2>/dev/null
-	uci set "wireless.@wifi-iface[$i].isolate='0'" 2>/dev/null
+	uci set "wireless.@wifi-iface[$i].ieee80211w=1" 2>/dev/null
+	uci set "wireless.@wifi-iface[$i].isolate=0" 2>/dev/null
 	i=$((i + 1))
 done
 uci commit wireless
@@ -115,6 +115,20 @@ fi
 wifi reload >/dev/null 2>&1 || wifi up >/dev/null 2>&1
 /etc/init.d/firewall restart >/dev/null 2>&1
 /etc/init.d/dnsmasq restart >/dev/null 2>&1
+
+# 自检：uci set "键='值'" 会把单引号写进值里（2026-11-03 那版固件就是这么坏的：
+# /etc/config/wireless 里出现 channel ''''auto''''，hostapd 解析失败，两个 radio 全禁用）
+bad=0
+for k in wireless.@wifi-device[0].channel wireless.@wifi-device[0].htmode          wireless.@wifi-iface[0].ssid wireless.@wifi-iface[0].encryption          wireless.@wifi-iface[0].key; do
+	v=$(uci -q get "$k")
+	case "$v" in
+		*"'"*) log "错误：$k 的值里带引号（$v），配置写坏了"; bad=1 ;;
+	esac
+done
+if [ "$bad" != 0 ]; then
+	log "首启配置自检失败，未写标记，下次开机会重试"
+	exit 1
+fi
 
 touch "$MARK"
 log "首启配置完成：192.168.1.1 / IPv6 / NAT1 / SSID CLI / WPA2+WPA3 混合"
