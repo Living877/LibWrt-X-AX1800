@@ -1,7 +1,10 @@
 name: Build AX1800 12M
 
 # 本仓库就是 LibWrt 25.12-nss 源码树（fork），构建时直接编当前 commit。
-# 配置全部在 ax1800/ 下，仓库根目录的 .github 与 ax1800/ 不参与 OpenWrt 构建。
+# 配置全部在 ax1800/ 下，根目录的 .github 与 ax1800/ 不参与 OpenWrt 构建。
+#
+# 自动发布：编译 + 校验通过后直接发 Release（含自动生成的更新说明）。
+# 上游同步由 sync-upstream.yml 负责，它合并完会调用本 workflow。
 
 on:
   workflow_dispatch:
@@ -13,17 +16,12 @@ on:
           - '12288'
           - '6144'
         default: '12288'
-      upload_release:
-        description: '编译成功后发 Release'
-        type: boolean
-        default: true
   push:
     branches: [25.12-nss]
     paths:
       - 'ax1800/**'
       - '.github/workflows/build.yml'
 
-# 同一时刻只跑一个构建；新的排队而不是掐掉正在跑的
 concurrency:
   group: build-ax1800
   cancel-in-progress: false
@@ -73,7 +71,7 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-          # 2) 再把 kiddin9 补进来，只装 iStore 需要的四个包
+          # 2) 再把 kiddin9 补进来，只装 iStore 需要的四个包（源码 feed，编出来是 apk）
           echo 'src-git kiddin9 https://github.com/kiddin9/op-packages.git' >> feeds.conf
           ./scripts/feeds update -p kiddin9
           ./scripts/feeds install -p kiddin9 luci-app-store luci-lib-taskd taskd luci-lib-xterm
@@ -99,7 +97,7 @@ jobs:
           # 12M：KERNEL_SIZE 默认 6144k，本机分区表是 12M
           sh ax1800/scripts/set-kernel-size.sh "${KS:-12288}"
 
-          # 首启配置（WiFi / IPv6 / NAT1 / 时区）作为 rootfs 覆盖层
+          # 首启配置（WiFi / IPv6 / NAT1 / 时区 / LAN / root 密码）作为 rootfs 覆盖层
           mkdir -p files
           cp -Rf ax1800/files/. files/
           test -f files/etc/uci-defaults/99-ax1800
@@ -107,11 +105,29 @@ jobs:
           make defconfig
           echo "===== 生效的关键项 ====="
           grep -E '^CONFIG_(TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01|PACKAGE_luci-theme-argon|PACKAGE_luci-app-store|PACKAGE_luci-app-usteer|PACKAGE_luci-app-autoreboot|PACKAGE_kmod-nft-fullcone|KERNEL_DEBUG_INFO_BTF|KERNEL_XDP_SOCKETS|VERSION_REPO)' .config || true
-          # luci-theme-argon 必须真的被选中，否则会静默回落到默认主题
           grep -q '^CONFIG_PACKAGE_luci-theme-argon=y$' .config \
             || { echo "::error::argon 3.x 没被选中（可能和 feed 里的包名冲突）"; exit 1; }
           grep -q '^CONFIG_PACKAGE_luci-app-store=y$' .config \
             || { echo "::error::iStore 没被选中"; exit 1; }
+
+      - name: 注入 root 密码
+        env:
+          RP: ${{ secrets.ROOT_PASSWORD }}
+        run: |
+          set -eu
+          python3 - "$RP" <<'PY'
+          import io, sys
+          pw = sys.argv[1].strip() or 'root'      # 没配 Secret 时默认 root
+          if '\n' in pw or '\r' in pw:
+              sys.exit('[x] ROOT_PASSWORD 含换行，passwd 会读错')
+          p = 'files/etc/uci-defaults/99-ax1800'
+          s = io.open(p, encoding='utf-8').read()
+          if '__ROOT_PASSWORD__' not in s:
+              sys.exit('[x] 99-ax1800 里找不到占位符 __ROOT_PASSWORD__')
+          io.open(p, 'w', encoding='utf-8').write(s.replace('__ROOT_PASSWORD__', pw))
+          PY
+          grep -q '__ROOT_PASSWORD__' files/etc/uci-defaults/99-ax1800 \
+            && { echo "::error::密码注入失败"; exit 1; } || true
 
       - name: 缓存 staging_dir
         uses: actions/cache@v4
@@ -166,6 +182,37 @@ jobs:
           done
           echo "[+] 关键包都在"
 
+      - name: 生成更新说明
+        id: notes
+        run: |
+          set -eu
+          prev=$(cat .upstream-state 2>/dev/null || echo "")
+          up=$(git ls-remote https://github.com/LiBwrt/LibWrt.git refs/heads/25.12-nss | awk '{print $1}')
+          echo "$up" > /tmp/upstream_sha
+          {
+            echo "## 上游更新"
+            if [ -n "$prev" ] && git cat-file -e "$prev" 2>/dev/null; then
+              git log --oneline "$prev"..HEAD -- target package include config toolchain scripts | head -40 \
+                | sed 's/^/- /' || true
+              [ "$(git log --oneline "$prev"..HEAD -- target package include config toolchain scripts | wc -l)" -gt 40 ] \
+                && echo "- ……（只列前 40 条）"
+            else
+              echo "- 首次构建，无对比基线"
+            fi
+            echo
+            echo "## 本次固件"
+            kver=$(grep -oP 'LINUX_KERNEL_HASH-\K[0-9.]+' target/linux/generic/kernel-6.12 2>/dev/null || echo unknown)
+            fit=$(od -An -tu4 -j4 -N4 --endian=big bin/targets/qualcommax/ipq60xx/*squashfs-factory.bin | tr -d ' ')
+            man=$(ls bin/targets/qualcommax/ipq60xx/*.manifest | head -1)
+            echo "- 内核 $kver，内核分区 ${KS:-12288}k，FIT ${fit} 字节，固件包 $(wc -l < "$man") 个"
+            echo "- 基于 commit \`$(git rev-parse --short HEAD)\`"
+            echo
+            echo "## 刷写"
+            echo "- 12M 表：U-Boot \`/firmware.html\` 刷 \`*factory.bin\`"
+            echo "- 已在本固件上：LuCI 升级或用 \`sysupgrade *sysupgrade.bin\`"
+          } > /tmp/release-notes.md
+          cat /tmp/release-notes.md
+
       - name: 上传 artifact
         uses: actions/upload-artifact@v4
         with:
@@ -177,21 +224,25 @@ jobs:
           if-no-files-found: error
 
       - name: 发布 Release
-        if: ${{ inputs.upload_release != false }}
         env:
           GH_TOKEN: ${{ github.token }}
           KS: ${{ inputs.kernel_size || '12288' }}
         run: |
           set -eu
           tag="ax1800-$(date +%Y%m%d)-${GITHUB_RUN_NUMBER}"
-          body=$(cat <<EOF
-          LibWrt 25.12-nss · 内核 $(grep -oP 'LINUX_KERNEL_HASH-\K[0-9.]+' target/linux/generic/kernel-6.12 || echo 6.12) · ${KS}k 内核分区
-          基于 $(git rev-parse --short HEAD)
-          EOF
-          )
           gh release create "$tag" \
             bin/targets/qualcommax/ipq60xx/*factory.bin \
             bin/targets/qualcommax/ipq60xx/*sysupgrade.bin \
             bin/targets/qualcommax/ipq60xx/*.manifest \
             bin/targets/qualcommax/ipq60xx/sha256sums \
-            --title "$tag" --notes "$body"
+            --title "$tag" --notes-file /tmp/release-notes.md
+
+      - name: 记录本次构建的上游版本
+        run: |
+          set -eu
+          cp /tmp/upstream_sha .upstream-state
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .upstream-state
+          git diff --cached --quiet || git commit -m "chore: 记录已构建的上游版本 $(cat .upstream-state | cut -c1-8)"
+          git push || true
