@@ -235,33 +235,44 @@ jobs:
         run: |
           set -eu
           T=bin/targets/qualcommax/ipq60xx
-          [ -d "$T/kmods" ] || { echo "::error::$T/kmods 不存在，没法生成 apk 源"; exit 1; }
-          KV=$(basename "$(ls -d "$T"/kmods/*/ | head -1)")
-          echo "内核版本目录: $KV"
+          # 全量 make 的产物全平铺在 $T/packages（rules.mk: PACKAGE_DIR ?= $(BIN_DIR)/packages）；
+          # kmods/<kver>/ 那种分层目录只有官方 buildbot（CONFIG_BUILDBOT）才生成，本地编译没有。
+          [ -d "$T/packages" ] || { echo "::error::$T/packages 不存在；$T 下实际有：$(ls -1 "$T" 2>/dev/null | tr '\n' ' ')"; exit 1; }
 
           OUT=$(mktemp -d)
           mkdir -p "$OUT/target" "$OUT/kmods"
-          cp -f "$T"/packages/*.apk "$OUT/target/" 2>/dev/null || true
-          cp -f "$T"/kmods/"$KV"/*.apk "$OUT/kmods/"
+          # 只发官方源给不了的两类：kernel（带本机 config 哈希）和 kmod-*（依赖那个哈希）。
+          # 其余包继续走 distfeeds 里的官方源，免得 apk-repo 分支每次构建涨几百 MB。
+          for f in "$T"/packages/kmod-*.apk; do
+            [ -e "$f" ] || continue
+            cp -f "$f" "$OUT/kmods/"
+          done
+          for f in "$T"/packages/kernel-*.apk; do
+            [ -e "$f" ] || continue
+            cp -f "$f" "$OUT/target/"
+          done
 
-          nk=$(ls -1 "$OUT/kmods"/*.apk | wc -l)
+          nk=$(find "$OUT/kmods" -maxdepth 1 -name '*.apk' | wc -l)
+          nt=$(find "$OUT/target" -maxdepth 1 -name '*.apk' | wc -l)
+          echo "kmods: $nk 个，target: $nt 个"
           [ "$nk" -gt 100 ] || { echo "::error::kmods 只有 $nk 个，明显不对"; exit 1; }
+          [ "$nt" -ge 1 ] || { echo "::error::没找到 kernel 包；kernel* 实际有：$(ls -1 "$T"/packages/kernel* 2>/dev/null | tr '\n' ' ')"; exit 1; }
 
           APK=$PWD/staging_dir/host/bin/apk
           [ -x "$APK" ] || { echo "::error::找不到 staging_dir/host/bin/apk"; exit 1; }
           # 没签名 = 设备一律报 UNTRUSTED signature，源等于白做，直接失败
-          [ -f private-key.pem ] || { echo "::error::private-key.pem 不存在（CONFIG_SIGNED_PACKAGES 没生效？）"; exit 1; }
+          [ -f private-key.pem ] || { echo "::error::private-key.pem 不存在"; exit 1; }
           sign="--sign $PWD/private-key.pem"
           cp -f public-key.pem "$OUT/" 2>/dev/null || openssl ec -in private-key.pem -pubout -out "$OUT/public-key.pem"
           echo "[+] 公钥已随源一起发布（刷旧镜像时可直接下载补装）"
 
           for d in target kmods; do
             ( cd "$OUT/$d"
-              n=$(ls -1 ./*.apk 2>/dev/null | wc -l)
-              [ "$n" -gt 0 ] || { echo "::warning::$d 目录没有 .apk，跳过"; exit 0; }
+              n=$(find . -maxdepth 1 -name '*.apk' | wc -l)
+              [ "$n" -gt 0 ] || { echo "::error::$d 目录没有 .apk"; exit 1; }
               $APK mkndx --root . --keys-dir . --allow-untrusted $sign --output packages.adb ./*.apk
               [ -f packages.adb.sig ] || { echo "::error::$d 的索引没有签名"; exit 1; }
-              echo "[+] $d: $n 个包，索引 $(stat -c%s packages.adb) 字节，签名 $(stat -c%s packages.adb.sig) 字节"
+              echo "[+] $d: $n 个包，$(du -sh . | cut -f1)，索引 $(stat -c%s packages.adb) 字节，签名 $(stat -c%s packages.adb.sig) 字节"
             )
           done
 
@@ -274,7 +285,7 @@ jobs:
           git init -q
           git checkout -q --orphan apk-repo
           git add -A
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "apk-repo: 内核 $KV $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "apk-repo: kmod $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" apk-repo
           echo "[+] 已发布到 apk-repo 分支（$(du -sh "$OUT" | cut -f1)）"
 

@@ -166,9 +166,12 @@ ax1800/
 固件里 166 个 `kmod-*` 绑死本机内核哈希（`kernel=6.12.112~7b482d99…`），公共源里永远没有这一份，
 apk 每次事务都会记 1 个 error。根治办法是自己发源：
 
-- CI 编译完后，把 `bin/targets/qualcommax/ipq60xx/packages/` 和 `kmods/<内核版本>/` 里的 `.apk`
-  用 `apk mkndx` 重新打索引，force-push 到本仓库的 `apk-repo` 分支。每次一个孤儿提交，
-  历史永远只有 1 个 commit，不会把仓库撑爆。
+- CI 编译完后，从 `bin/targets/qualcommax/ipq60xx/packages/` 里挑出 `kmod-*` 和 `kernel-*`
+  两类包（本地 `make` 不生成 `kmods/<内核版本>/`，那种分层只有官方 buildbot 才有，
+  全量产物都平铺在 `packages/` 下），用 `apk mkndx` 重新打索引，force-push 到本仓库的
+  `apk-repo` 分支。每次一个孤儿提交，历史永远只有 1 个 commit，不会把仓库撑爆。
+- 只发这两类：其余几百个包官方源里都有，没必要在 GitHub 上再存一份（发全量每次构建要多推
+  200~300 MB）。因此固件装别的包仍然走 distfeeds 里的官方源。
 - 固件构建时自动生成 `/etc/apk/repositories.d/00-ax1800.list`，指向
   `https://raw.githubusercontent.com/<owner>/<repo>/apk-repo/target/packages.adb` 和
   `.../apk-repo/kmods/packages.adb`。

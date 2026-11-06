@@ -35,3 +35,7 @@ git-src
 .cproject
 .ccache
 .vscode*
+
+# apk 签名密钥（绝不能进仓库）
+private-key.pem
+public-key.pem
