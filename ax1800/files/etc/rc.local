@@ -1,30 +1,42 @@
 #!/bin/sh
-# 开机把 /etc/apk/world 里「源里不存在」的自编译包删掉。
+# 开机把 /etc/apk/world 里「源里解析不了」的包删掉。
 #
-# 背景：镜像里所有包都被写进 world，其中 31 个只在本机构建（NSS 那套 kmod、
-# NSS 固件、iStore、本机 BDF 等），任何公开源里都没有。apk 每次事务都要解析
-# 整个 world，解析失败就固定记 1 个 error —— 装包其实是成功的，只是退出码变 1。
+# 背景：镜像里所有包都被写进 world（450+ 条）。其中有两类在公共源里解析不了：
+#   1. 全部 kmod-*（166 个）—— kmod 依赖 kernel=6.12.112~<本机编译哈希>，
+#      公共源里的 kmod 依赖的是另一个哈希，apk 一律判定为「不可用」；
+#   2. 只在本机构建、任何源都没有的包（NSS 固件、iStore、本机 BDF 等）。
+# apk 每次事务都要解析整个 world，解析失败就固定记 1 个 error —— 装包其实是
+# 成功的，只是退出码变成 1（OpenClash 自动更新就因此永远预检失败）。
 #
-# 这里只删 world 里的清单条目：不卸载包、不动文件，NSS 驱动照常加载。
-# 幂等：world 里没有匹配项时什么都不写。名单见 /etc/apk/world.trim。
+# 这里只删 world 里的清单条目：不卸载包、不动文件，NSS/文件系统模块照常加载。
+# 幂等：world 里没有匹配项时什么都不写。额外名单见 /etc/apk/world.trim。
 
-TRIM=/etc/apk/world.trim
 WORLD=/etc/apk/world
+TRIM=/etc/apk/world.trim
 
-[ -f "$TRIM" ] && [ -f "$WORLD" ] || exit 0
+[ -f "$WORLD" ] || exit 0
 
 n=0
-while IFS= read -r p; do
-	case "$p" in ''|'#'*) continue ;; esac
-	if grep -qxF "$p" "$WORLD"; then
-		sed -i "\|^$p\$|d" "$WORLD"
-		n=$((n + 1))
-	fi
-done < "$TRIM"
+
+# 1) 全部内核模块：它们绑死本机内核哈希，公共源里那份永远不可用
+before=$(wc -l < "$WORLD")
+sed -i '/^kmod-/d' "$WORLD"
+n=$(( before - $(wc -l < "$WORLD") ))
+
+# 2) 本机私有包（NSS 固件、iStore、板级 BDF …）
+if [ -f "$TRIM" ]; then
+	while IFS= read -r p; do
+		case "$p" in ''|'#'*) continue ;; esac
+		if grep -qxF "$p" "$WORLD"; then
+			sed -i "\|^$p\$|d" "$WORLD"
+			n=$((n + 1))
+		fi
+	done < "$TRIM"
+fi
 
 if [ "$n" -gt 0 ]; then
 	command -v logger >/dev/null 2>&1 && \
-		logger -t ax1800 "apk world 已裁掉 $n 个源里不存在的包"
+		logger -t ax1800 "apk world 已裁掉 $n 个源里解析不了的包"
 fi
 
 exit 0

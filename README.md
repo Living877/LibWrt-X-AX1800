@@ -156,7 +156,8 @@ ax1800/
 - 跑代理前别开软件卸载（`flow_offloading`），否则部分流量绕过 TUN/TPROXY
 - 路由器上没有 `od`、`timeout`、`partx`、`sgdisk`、`fdisk`；有 `parted`、`blkid`、`mkfs.ext4`
 - busybox ash **不认 `$'...'`**
-- **`apk` 每次事务都报 `1 error`（已处理）**：镜像里所有包都被写进 `/etc/apk/world`，其中 31 个只在本机构建、任何公开源里都没有（NSS 那套 kmod、NSS 固件、iStore 四个、`ipq-wifi-jdcloud_re-ss-01`、`sqm-scripts-nss`）。apk 每次事务都要解析整个 world，找不到就固定记 1 个 error —— 包其实装成功了，只是退出码变成 1。`/etc/rc.local` 开机时按 `/etc/apk/world.trim` 把这些条目从 world 清单删掉（**只删清单，不卸载、不删文件**，NSS 驱动照常加载），刷这版之后就不会再报。以后往 `packages.config` 加自编译包（源里没有的那种），记得往 `world.trim` 补一行，构建日志会提示漏了哪个。
+- **`apk` 每次事务都报 `1 error`（已处理）**：镜像里所有包都被写进 `/etc/apk/world`，其中 175 个在公共源里解析不了 —— 166 个 `kmod-*`（内核模块绑死本机编译哈希 `kernel=6.12.112~7b482d99…`，公共源里是 `cf8cd0bb…`，apk 一律判为不可用），加 9 个只在本机构建的包（NSS 固件、iStore 四个、`ipq-wifi-jdcloud_re-ss-01`、`sqm-scripts-nss`）。apk 每次事务都要解析整个 world，解析失败就固定记 1 个 error —— 包其实装成功了，只是退出码变成 1（OpenClash 自动更新的预检就是被这个卡住的）。`/etc/rc.local` 开机时把 `kmod-*` 全删、再按 `/etc/apk/world.trim` 删那 9 个（**只删 world 清单，不卸载、不删文件**，模块照常加载），刷这版之后就不再报。
+- **别 `apk upgrade` 整个系统**：源里的内核是另一个编译哈希，升级内核会让现有全部 kmod 失配（无线、NSS、文件系统模块全挂）。装单个包用 `apk add 包名` 就行。
 
 ## 许可
 
