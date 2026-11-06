@@ -249,15 +249,19 @@ jobs:
 
           APK=$PWD/staging_dir/host/bin/apk
           [ -x "$APK" ] || { echo "::error::找不到 staging_dir/host/bin/apk"; exit 1; }
-          sign=""
-          if [ -f private-key.pem ]; then sign="--sign $PWD/private-key.pem"; fi
+          # 没签名 = 设备一律报 UNTRUSTED signature，源等于白做，直接失败
+          [ -f private-key.pem ] || { echo "::error::private-key.pem 不存在（CONFIG_SIGNED_PACKAGES 没生效？）"; exit 1; }
+          sign="--sign $PWD/private-key.pem"
+          cp -f public-key.pem "$OUT/" 2>/dev/null || openssl ec -in private-key.pem -pubout -out "$OUT/public-key.pem"
+          echo "[+] 公钥已随源一起发布（刷旧镜像时可直接下载补装）"
 
           for d in target kmods; do
             ( cd "$OUT/$d"
               n=$(ls -1 ./*.apk 2>/dev/null | wc -l)
               [ "$n" -gt 0 ] || { echo "::warning::$d 目录没有 .apk，跳过"; exit 0; }
               $APK mkndx --root . --keys-dir . --allow-untrusted $sign --output packages.adb ./*.apk
-              echo "[+] $d: $n 个包，索引 $(stat -c%s packages.adb) 字节"
+              [ -f packages.adb.sig ] || { echo "::error::$d 的索引没有签名"; exit 1; }
+              echo "[+] $d: $n 个包，索引 $(stat -c%s packages.adb) 字节，签名 $(stat -c%s packages.adb.sig) 字节"
             )
           done
 
