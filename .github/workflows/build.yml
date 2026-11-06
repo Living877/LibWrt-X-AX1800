@@ -261,18 +261,24 @@ jobs:
           APK=$PWD/staging_dir/host/bin/apk
           [ -x "$APK" ] || { echo "::error::找不到 staging_dir/host/bin/apk"; exit 1; }
           # 没签名 = 设备一律报 UNTRUSTED signature，源等于白做，直接失败
-          [ -f private-key.pem ] || { echo "::error::private-key.pem 不存在"; exit 1; }
-          sign="--sign $PWD/private-key.pem"
-          cp -f public-key.pem "$OUT/" 2>/dev/null || openssl ec -in private-key.pem -pubout -out "$OUT/public-key.pem"
+          KEY=$PWD/private-key.pem
+          [ -f "$KEY" ] || { echo "::error::private-key.pem 不存在"; exit 1; }
+          cp -f public-key.pem "$OUT/" 2>/dev/null || openssl ec -in "$KEY" -pubout -out "$OUT/public-key.pem"
           echo "[+] 公钥已随源一起发布（刷旧镜像时可直接下载补装）"
 
           for d in target kmods; do
             ( cd "$OUT/$d"
               n=$(find . -maxdepth 1 -name '*.apk' | wc -l)
               [ "$n" -gt 0 ] || { echo "::error::$d 目录没有 .apk"; exit 1; }
-              $APK mkndx --root . --keys-dir . --allow-untrusted $sign --output packages.adb ./*.apk
-              [ -f packages.adb.sig ] || { echo "::error::$d 的索引没有签名"; exit 1; }
-              echo "[+] $d: $n 个包，$(du -sh . | cut -f1)，索引 $(stat -c%s packages.adb) 字节，签名 $(stat -c%s packages.adb.sig) 字节"
+              $APK mkndx --root . --keys-dir . --allow-untrusted --output packages.adb ./*.apk
+              before=$(stat -c%s packages.adb)
+              # apk 3.0.5 的 mkndx 根本没有 --sign（--sign 只是全局 --sign-key 的缩写，只加载密钥、不签名）。
+              # 签名要用 adbsign 把签名块写进 packages.adb 本身——apk v3 的索引没有 .sig 文件。
+              $APK --sign-key "$KEY" --keys-dir "$OUT" adbsign --reset-signatures packages.adb
+              after=$(stat -c%s packages.adb)
+              # adbsign 出错也返回 0，只能靠体积变化判断
+              [ "$after" -gt "$before" ] || { echo "::error::$d 的索引没签上（$before -> $after 字节）"; exit 1; }
+              echo "[+] $d: $n 个包，$(du -sh . | cut -f1)，索引 $after 字节（签名 $(($after - $before)) 字节）"
             )
           done
 
