@@ -161,6 +161,34 @@ ax1800/
 - **别照着 apk 的 `NOTE: Consider running apk upgrade with --prune and/or --available` 做**：`--prune` 会把 90 个包当孤儿清掉（`kmod-fs-f2fs`、`kmod-leds-gpio`、`kmod-gpio-button-hotplug`、`kmod-dsa`/`kmod-dsa-qca8k`、`kmod-thermal`、`kmod-qcom-qmi-helpers`、`kmod-qrtr`、`kmod-mhi-bus`、`kmod-phylink`、`kmod-regmap-core` …），`--available` 会把 99 个包替换成源里的版本。这台机器的内核是打 NSS 补丁自编译的，两条跑下去当场失能。那条 NOTE 是 apk 的通用建议，在「内核非官方」的场景下是陷阱。
 - **包源被换成 `mirrors.vsean.net`（已处理）**：`default-settings-chn` 首启会把 `/etc/apk/repositories.d/distfeeds.list` 里的 `downloads.immortalwrt.org` 全换成 `system.@imm_init[0].apk_mirror`，它的默认值是 `https://mirrors.vsean.net/openwrt`。这个域名现在只回一个跟不过去的 302（日志里是 `wget: exited with error 8` / `unexpected end of file`），六个源索引全刷不下来，`apk update` 就又凑出 1 个 error —— 和 world 那 175 条是两回事。固件里做了双保险：`/etc/uci-defaults/99-ax1800` 先把 `apk_mirror` 钉成官方源（它排在 `99-default-settings-chinese` 前面，对方的 sed 变成空操作），`/etc/rc.local` 每次开机再把残留的 vsean 地址改回来。
 
+## 自建 apk 源（apk-repo 分支）
+
+固件里 166 个 `kmod-*` 绑死本机内核哈希（`kernel=6.12.112~7b482d99…`），公共源里永远没有这一份，
+apk 每次事务都会记 1 个 error。根治办法是自己发源：
+
+- CI 编译完后，把 `bin/targets/qualcommax/ipq60xx/packages/` 和 `kmods/<内核版本>/` 里的 `.apk`
+  用 `apk mkndx` 重新打索引，force-push 到本仓库的 `apk-repo` 分支。每次一个孤儿提交，
+  历史永远只有 1 个 commit，不会把仓库撑爆。
+- 固件构建时自动生成 `/etc/apk/repositories.d/00-ax1800.list`，指向
+  `https://raw.githubusercontent.com/<owner>/<repo>/apk-repo/target/packages.adb` 和
+  `.../apk-repo/kmods/packages.adb`。
+- 用 raw 不用 Release：Releases 会 302 到 `objects.githubusercontent.com`，apk 不跟跨域跳转，
+  会重演 `mirrors.vsean.net` 那个 `wget: exited with error 8`。
+
+**签名**：apk 只信任 `/etc/apk/keys/` 里的公钥。固件开了 `CONFIG_SIGNED_PACKAGES=y`，
+构建时用 `private-key.pem` 给索引签名，公钥由 base-files 装进镜像。私钥放仓库 Secret：
+
+```sh
+openssl ecparam -name prime256v1 -genkey -noout -out private-key.pem
+gh secret set APK_SIGNING_KEY --repo <owner>/<repo> < private-key.pem
+```
+
+没配 Secret 时构建会现生成一把，镜像和源仍然自洽；但下次重新构建后，之前刷的旧镜像就不认新源了
+（表现为 `apk update` 报 UNTRUSTED signature）。
+
+验证：`apk update` 应看到多出两条 raw 源、退出码 0；`apk add -s luci-base` 退出码 0，
+不再出现 `The following packages are no longer available from a repository`。
+
 ## 许可
 
 上游 LibWrt / OpenWrt 均为 GPL-2.0，本仓库继承。

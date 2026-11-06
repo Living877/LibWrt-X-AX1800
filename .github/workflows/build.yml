@@ -99,6 +99,7 @@ jobs:
           cat ax1800/config/packages.config >> .config
           cat ax1800/config/packages-store.config >> .config
           cat ax1800/config/kernel-dae.config >> .config
+          cat ax1800/config/apk-repo.config >> .config
 
           # 12M：KERNEL_SIZE 默认 6144k，本机分区表是 12M
           sh ax1800/scripts/set-kernel-size.sh "${KS:-12288}"
@@ -109,6 +110,13 @@ jobs:
           # git 不保证保留可执行位，这里显式补上，否则 /etc/rc.local 不会被 /etc/init.d/done 执行
           chmod +x files/etc/rc.local files/etc/uci-defaults/*
           test -f files/etc/uci-defaults/99-ax1800
+          # apk 自建源：raw 直链，200 直出、不跳转（Releases 会 302 到 objects.githubusercontent.com，apk 不跟）
+          mkdir -p files/etc/apk/repositories.d
+          {
+            echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/apk-repo/target/packages.adb"
+            echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/apk-repo/kmods/packages.adb"
+          } > files/etc/apk/repositories.d/00-ax1800.list
+          cat files/etc/apk/repositories.d/00-ax1800.list
 
           make defconfig
           echo "===== 生效的关键项 ====="
@@ -153,6 +161,20 @@ jobs:
           PY
           grep -q '__ROOT_PASSWORD__' files/etc/uci-defaults/99-ax1800 \
             && { echo "::error::密码注入失败"; exit 1; } || true
+
+      - name: 写入 apk 签名密钥
+        env:
+          KEY: ${{ secrets.APK_SIGNING_KEY }}
+        run: |
+          set -eu
+          if [ -n "$KEY" ]; then
+            echo "$KEY" > private-key.pem
+            chmod 600 private-key.pem
+            openssl ec -in private-key.pem -pubout > public-key.pem
+            echo "[+] 使用 Secret APK_SIGNING_KEY 里的私钥签名"
+          else
+            echo "::warning::没配 APK_SIGNING_KEY，本次构建现生成密钥；以后重刷固件，旧镜像将不信任新的 apk-repo"
+          fi
 
       - name: 缓存 staging_dir
         uses: actions/cache@v4
@@ -206,6 +228,51 @@ jobs:
             grep -q "^$p " "$man" || { echo "::error::固件里没有 $p"; exit 1; }
           done
           echo "[+] 关键包都在"
+
+      - name: 发布 apk 源到 apk-repo 分支
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          T=bin/targets/qualcommax/ipq60xx
+          [ -d "$T/kmods" ] || { echo "::error::$T/kmods 不存在，没法生成 apk 源"; exit 1; }
+          KV=$(basename "$(ls -d "$T"/kmods/*/ | head -1)")
+          echo "内核版本目录: $KV"
+
+          OUT=$(mktemp -d)
+          mkdir -p "$OUT/target" "$OUT/kmods"
+          cp -f "$T"/packages/*.apk "$OUT/target/" 2>/dev/null || true
+          cp -f "$T"/kmods/"$KV"/*.apk "$OUT/kmods/"
+
+          nk=$(ls -1 "$OUT/kmods"/*.apk | wc -l)
+          [ "$nk" -gt 100 ] || { echo "::error::kmods 只有 $nk 个，明显不对"; exit 1; }
+
+          APK=$PWD/staging_dir/host/bin/apk
+          [ -x "$APK" ] || { echo "::error::找不到 staging_dir/host/bin/apk"; exit 1; }
+          sign=""
+          if [ -f private-key.pem ]; then sign="--sign $PWD/private-key.pem"; fi
+
+          for d in target kmods; do
+            ( cd "$OUT/$d"
+              n=$(ls -1 ./*.apk 2>/dev/null | wc -l)
+              [ "$n" -gt 0 ] || { echo "::warning::$d 目录没有 .apk，跳过"; exit 0; }
+              $APK mkndx --root . --keys-dir . --allow-untrusted $sign --output packages.adb ./*.apk
+              echo "[+] $d: $n 个包，索引 $(stat -c%s packages.adb) 字节"
+            )
+          done
+
+          $APK adbdump --format json "$OUT/target/packages.adb" > /tmp/idx-target.json 2>/dev/null || true
+          $APK adbdump --format json "$OUT/kmods/packages.adb"  > /tmp/idx-kmods.json  2>/dev/null || true
+          grep -qE '"name": *"kernel"' /tmp/idx-target.json || echo "::warning::target 索引里没找到 kernel 包名，检查一下格式"
+          grep -q 'kmod-mac80211' /tmp/idx-kmods.json || echo "::warning::kmods 索引里没找到 kmod-mac80211"
+
+          cd "$OUT"
+          git init -q
+          git checkout -q --orphan apk-repo
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "apk-repo: 内核 $KV $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" apk-repo
+          echo "[+] 已发布到 apk-repo 分支（$(du -sh "$OUT" | cut -f1)）"
 
       - name: 生成更新说明
         id: notes
