@@ -299,6 +299,11 @@ jobs:
             echo "- 内核 $kver，内核分区 ${KS:-12288}k，FIT ${fit} 字节，固件包 $(wc -l < "$man") 个"
             echo "- 基于 commit \`$(git rev-parse --short HEAD)\`"
             echo
+            echo "## apk 源"
+            echo "- 分支：https://github.com/${GITHUB_REPOSITORY}/tree/apk-repo"
+            echo "- 固件内置：https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/apk-repo/target/packages.adb"
+            echo "- 固件内置：https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/apk-repo/kmods/packages.adb"
+            echo
             echo "## 刷写"
             echo "- 12M 表：U-Boot \`/firmware.html\` 刷 \`*factory.bin\`"
             echo "- 已在本固件上：LuCI 升级或用 \`sysupgrade *sysupgrade.bin\`"
