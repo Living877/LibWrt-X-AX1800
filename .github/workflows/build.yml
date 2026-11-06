@@ -106,6 +106,8 @@ jobs:
           # 首启配置（WiFi / IPv6 / NAT1 / 时区 / LAN / root 密码）作为 rootfs 覆盖层
           mkdir -p files
           cp -Rf ax1800/files/. files/
+          # git 不保证保留可执行位，这里显式补上，否则 /etc/rc.local 不会被 /etc/init.d/done 执行
+          chmod +x files/etc/rc.local files/etc/uci-defaults/*
           test -f files/etc/uci-defaults/99-ax1800
 
           make defconfig
@@ -204,20 +206,6 @@ jobs:
             grep -q "^$p " "$man" || { echo "::error::固件里没有 $p"; exit 1; }
           done
           echo "[+] 关键包都在"
-
-      - name: 校验 apk world 裁剪名单
-        run: |
-          set -eu
-          man=$(ls bin/targets/qualcommax/ipq60xx/*jdcloud_re-ss-01.manifest | head -1)
-          trim=files/etc/apk/world.trim
-          [ -f "$trim" ] || { echo "::error::world.trim 没进 rootfs 覆盖层"; exit 1; }
-          miss=0
-          # 本机构建、任何源里都没有的包：必须出现在裁剪名单里，否则刷机后 apk 仍报 1 error
-          grep -qF "sed -i '/^kmod-/d'" files/etc/rc.local || { echo "::error::rc.local 缺少 kmod 裁剪规则"; exit 1; }
-          for p in $(awk '{print $1}' "$man" | grep -E '^(nss-firmware|nss-eip-firmware|sqm-scripts-nss|ipq-wifi-|luci-app-store|luci-lib-taskd|luci-lib-xterm|taskd)$'); do
-            grep -qxF "$p" "$trim" || { echo "::warning::$p 不在 world.trim 里，刷机后 apk 仍会报 1 error"; miss=$((miss+1)); }
-          done
-          echo "[+] world.trim 共 $(grep -cvE '^[[:space:]]*(#|$)' "$trim") 条，本轮缺 $miss 个"
 
       - name: 生成更新说明
         id: notes

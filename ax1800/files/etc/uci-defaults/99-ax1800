@@ -20,6 +20,19 @@ uci add_list system.ntp.server='ntp.aliyun.com' 2>/dev/null
 uci add_list system.ntp.server='cn.pool.ntp.org' 2>/dev/null
 uci commit system
 
+# ---------- 1.5 包源 ----------
+# LibWrt 的 default-settings-chn 首启会把 /etc/apk/repositories.d/distfeeds.list
+# 里的 downloads.immortalwrt.org 换成 system.@imm_init[0].apk_mirror，它的默认值
+# 是 mirrors.vsean.net —— 那个域名现在只回一个跟不过去的 302，apk 拿不到
+# packages.adb（wget error 8 / unexpected end of file），整个事务就记 1 个 error。
+# 这里先把它钉成官方源，那个脚本的 sed 就变成空操作。
+# 本文件排在 99-default-settings-chinese 之前（uci-defaults 按文件名顺序执行）。
+if ! uci -q get system.@imm_init[0] >/dev/null 2>&1; then
+	uci add system imm_init >/dev/null 2>&1
+fi
+uci set system.@imm_init[0].apk_mirror='https://downloads.immortalwrt.org' 2>/dev/null
+uci commit system
+
 # ---------- 2. root 密码 ----------
 # 构建时注入；没配 Secret(ROOT_PASSWORD) 时默认 root。
 ROOT_PW='__ROOT_PASSWORD__'

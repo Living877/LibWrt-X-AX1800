@@ -156,8 +156,10 @@ ax1800/
 - 跑代理前别开软件卸载（`flow_offloading`），否则部分流量绕过 TUN/TPROXY
 - 路由器上没有 `od`、`timeout`、`partx`、`sgdisk`、`fdisk`；有 `parted`、`blkid`、`mkfs.ext4`
 - busybox ash **不认 `$'...'`**
-- **`apk` 每次事务都报 `1 error`（已处理）**：镜像里所有包都被写进 `/etc/apk/world`，其中 175 个在公共源里解析不了 —— 166 个 `kmod-*`（内核模块绑死本机编译哈希 `kernel=6.12.112~7b482d99…`，公共源里是 `cf8cd0bb…`，apk 一律判为不可用），加 9 个只在本机构建的包（NSS 固件、iStore 四个、`ipq-wifi-jdcloud_re-ss-01`、`sqm-scripts-nss`）。apk 每次事务都要解析整个 world，解析失败就固定记 1 个 error —— 包其实装成功了，只是退出码变成 1（OpenClash 自动更新的预检就是被这个卡住的）。`/etc/rc.local` 开机时把 `kmod-*` 全删、再按 `/etc/apk/world.trim` 删那 9 个（**只删 world 清单，不卸载、不删文件**，模块照常加载），刷这版之后就不再报。
+- **`apk` 每次事务都报 `1 error`（未解决）**：镜像里 452 个包全被写进 `/etc/apk/world`，其中 166 个 `kmod-*` 绑死本机编译哈希 `kernel=6.12.112~7b482d99…`，公共源里是 `cf8cd0bb…`，任何已配置仓库都找不到它们。注意 apk 的检查对象是**已安装包集合**（`/lib/apk/db/installed`），不是 world：实测把 world 里的 kmod 全删掉，`apk add -s luci-base` 退出码仍是 1，反而把这些包变成孤儿，`apk upgrade` 会计划 Purging 78 个（含 `kmod-mac80211`/`kmod-ath11k`，WiFi 当场没了）。**所以不要裁 world**。根治只有一条路：把自编译产物 `bin/targets/qualcommax/ipq60xx/packages/` 和 `kmods/<内核版本>/` 发布成一个 apk 源，让 apk 真的找得到这 166 个包。在那之前，`1 error` 只影响退出码，装包本身是成功的（iStore / OpenClash 会误判成失败）。
 - **别 `apk upgrade` 整个系统**：源里的内核是另一个编译哈希，升级内核会让现有全部 kmod 失配（无线、NSS、文件系统模块全挂）。装单个包用 `apk add 包名` 就行。
+- **别照着 apk 的 `NOTE: Consider running apk upgrade with --prune and/or --available` 做**：`--prune` 会把 90 个包当孤儿清掉（`kmod-fs-f2fs`、`kmod-leds-gpio`、`kmod-gpio-button-hotplug`、`kmod-dsa`/`kmod-dsa-qca8k`、`kmod-thermal`、`kmod-qcom-qmi-helpers`、`kmod-qrtr`、`kmod-mhi-bus`、`kmod-phylink`、`kmod-regmap-core` …），`--available` 会把 99 个包替换成源里的版本。这台机器的内核是打 NSS 补丁自编译的，两条跑下去当场失能。那条 NOTE 是 apk 的通用建议，在「内核非官方」的场景下是陷阱。
+- **包源被换成 `mirrors.vsean.net`（已处理）**：`default-settings-chn` 首启会把 `/etc/apk/repositories.d/distfeeds.list` 里的 `downloads.immortalwrt.org` 全换成 `system.@imm_init[0].apk_mirror`，它的默认值是 `https://mirrors.vsean.net/openwrt`。这个域名现在只回一个跟不过去的 302（日志里是 `wget: exited with error 8` / `unexpected end of file`），六个源索引全刷不下来，`apk update` 就又凑出 1 个 error —— 和 world 那 175 条是两回事。固件里做了双保险：`/etc/uci-defaults/99-ax1800` 先把 `apk_mirror` 钉成官方源（它排在 `99-default-settings-chinese` 前面，对方的 sed 变成空操作），`/etc/rc.local` 每次开机再把残留的 vsean 地址改回来。
 
 ## 许可
 
