@@ -1,0 +1,47 @@
+# apk world 裁剪名单
+#
+# 这里列的是「固件里有、但任何公开源里都没有」的包。它们留在 /etc/apk/world
+# 里会让 apk 每次事务解析失败，固定打一行 "1 error"（安装本身是成功的）。
+# /etc/rc.local 开机时会把它们从 world 清单里删掉——只删清单条目，不卸载、
+# 不删文件，这些包照常加载运行。
+#
+# 以后往 packages.config 加自编译包（源里没有的那种），记得在这里补一行。
+
+# ---- NSS 卸载驱动（来自 laipeng668/nss-packages）----
+kmod-qca-nss-drv
+kmod-qca-nss-drv-netlink
+kmod-qca-nss-drv-pppoe
+kmod-qca-nss-drv-l2tpv2
+kmod-qca-nss-drv-pptp
+kmod-qca-nss-drv-gre
+kmod-qca-nss-drv-eogremgr
+kmod-qca-nss-drv-tun6rd
+kmod-qca-nss-drv-tunipip6
+kmod-qca-nss-drv-map-t
+kmod-qca-nss-drv-bridge-mgr
+kmod-qca-nss-drv-vlan-mgr
+kmod-qca-nss-drv-lag-mgr
+kmod-qca-nss-drv-vxlanmgr
+kmod-qca-nss-drv-wifi-meshmgr
+kmod-qca-nss-drv-igs
+kmod-qca-nss-drv-mirror
+kmod-qca-nss-drv-match
+kmod-qca-nss-drv-qdisc
+kmod-qca-nss-ecm
+kmod-qca-nss-crypto
+kmod-nss-ifb
+
+# ---- NSS 固件 ----
+nss-firmware
+nss-firmware-ipq60xx
+nss-eip-firmware
+
+# ---- 本机专属 ----
+ipq-wifi-jdcloud_re-ss-01
+
+# ---- 第三方源编进来的 ----
+sqm-scripts-nss
+luci-app-store
+luci-lib-taskd
+luci-lib-xterm
+taskd

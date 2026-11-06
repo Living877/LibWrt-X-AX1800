@@ -141,7 +141,7 @@ ax1800/
   device-partitions.md   设备与分区事实底稿
   plugin-catalog.md      插件清单（用途/依赖/注意事项）
   config/                配置片段（机型、包、iStore、dae 内核、软件源）
-  files/                 rootfs 覆盖层（首启脚本）
+  files/                 rootfs 覆盖层（首启脚本 / apk world 裁剪）
   scripts/               12M 内核分区改写
 .github/workflows/
   build.yml              构建 + 校验 + 自动发布
@@ -156,6 +156,7 @@ ax1800/
 - 跑代理前别开软件卸载（`flow_offloading`），否则部分流量绕过 TUN/TPROXY
 - 路由器上没有 `od`、`timeout`、`partx`、`sgdisk`、`fdisk`；有 `parted`、`blkid`、`mkfs.ext4`
 - busybox ash **不认 `$'...'`**
+- **`apk` 每次事务都报 `1 error`（已处理）**：镜像里所有包都被写进 `/etc/apk/world`，其中 31 个只在本机构建、任何公开源里都没有（NSS 那套 kmod、NSS 固件、iStore 四个、`ipq-wifi-jdcloud_re-ss-01`、`sqm-scripts-nss`）。apk 每次事务都要解析整个 world，找不到就固定记 1 个 error —— 包其实装成功了，只是退出码变成 1。`/etc/rc.local` 开机时按 `/etc/apk/world.trim` 把这些条目从 world 清单删掉（**只删清单，不卸载、不删文件**，NSS 驱动照常加载），刷这版之后就不会再报。以后往 `packages.config` 加自编译包（源里没有的那种），记得往 `world.trim` 补一行，构建日志会提示漏了哪个。
 
 ## 许可
 
