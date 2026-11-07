@@ -284,6 +284,57 @@ jobs:
           [ -f "$KEY" ] || { echo "::error::private-key.pem 不存在"; exit 1; }
           cp -f public-key.pem "$OUT/" 2>/dev/null || openssl ec -in "$KEY" -pubout -out "$OUT/public-key.pem"
           echo "[+] 公钥已随源一起发布（刷旧镜像时可直接下载补装）"
+          # ---- 额外包：镜像里装了、但官方/iStore 源都没有的自编包 ----
+          # 典型：ipq-wifi-jdcloud_re-ss-01、nss-firmware(-ipq60xx)、nss-eip-firmware、
+          # sqm-scripts-nss，以及本地编的 luci-app-openclash / argon 3.x。
+          # 缺了它们 apk 每次事务都记 1 个 error（iStore / OpenClash 会误判成失败）。
+          # 做法：镜像 manifest 里的包名 减去 官方+iStore 索引已有的，剩下的从本地产物里捞，
+          # 塞进 target/ 一起发布 —— 设备端不用新增源地址。
+          OFF=https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT
+          APKG=aarch64_cortex-a53
+          rm -rf /tmp/known-idx; mkdir -p /tmp/known-idx
+          i=0
+          for u in "$OFF/packages/$APKG/base" "$OFF/packages/$APKG/luci" \
+                   "$OFF/packages/$APKG/packages" "$OFF/packages/$APKG/routing" \
+                   "$OFF/packages/$APKG/telephony" \
+                   "$OFF/targets/qualcommax/ipq60xx/packages" \
+                   https://istore.istoreos.com/repo-apk/all/nas_luci \
+                   https://istore.istoreos.com/repo-apk/all/store \
+                   https://istore.istoreos.com/repo-apk/all/meta \
+                   https://istore.istoreos.com/repo-apk/all/compat \
+                   https://istore.istoreos.com/repo-apk/aarch64_generic/nas; do
+            i=$((i+1))
+            curl -fsSL --retry 3 --max-time 90 "$u/packages.adb" -o "/tmp/known-idx/$i.adb" \
+              || echo "::warning::索引没下到：$u"
+          done
+          : > /tmp/known-names
+          for f in /tmp/known-idx/*.adb; do
+            [ -e "$f" ] || continue
+            $APK --allow-untrusted adbdump --format json "$f" 2>/dev/null \
+              | grep -o '"name": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' >> /tmp/known-names || true
+          done
+          sort -u -o /tmp/known-names /tmp/known-names
+          kn=$(wc -l < /tmp/known-names)
+          echo "官方/iStore 已知包名 $kn 个"
+          # 索引没下全就停：否则会把官方包重复发一遍，跟官方源打架
+          [ "$kn" -gt 5000 ] || { echo "::error::已知包名只有 $kn 个，索引没下全"; exit 1; }
+
+          MAN=$(ls "$T"/*.manifest 2>/dev/null | head -1)
+          [ -f "$MAN" ] || { echo "::error::没找到 manifest"; exit 1; }
+          ne=0
+          for n in $(awk '{print $1}' "$MAN" | sort -u); do
+            case "$n" in kmod-*|kernel*) continue ;; esac
+            if grep -qxF "$n" /tmp/known-names; then continue; fi
+            for f in bin/packages/$APKG/*/"$n"-[0-9]*.apk "$T"/packages/"$n"-[0-9]*.apk; do
+              [ -e "$f" ] || continue
+              cp -f "$f" "$OUT/target/"
+              echo "  + 额外包 $n"
+              ne=$((ne+1))
+              break
+            done
+          done
+          echo "额外包 $ne 个"
+          [ "$ne" -ge 1 ] || echo "::warning::没找到额外包，nss-firmware 那几个应该在里面的"
 
           for d in target kmods; do
             ( cd "$OUT/$d"
