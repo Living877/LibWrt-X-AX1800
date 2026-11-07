@@ -181,7 +181,9 @@ apk 每次事务都会记 1 个 error。根治办法是自己发源：
 **签名**：apk 只信任 `/etc/apk/keys/` 里的公钥。索引由 CI 用 `apk --sign-key … adbsign` 签名，
 签名块直接写在 `packages.adb` 里面（apk v3 的索引没有 `.sig` 文件）。这里有个坑：`apk mkndx`
 **不支持** `--sign`，那个 `--sign` 只是全局 `--sign-key` 的缩写，只加载密钥、不产出签名，
-所以必须再跑一次 `adbsign`。公钥由 base-files 装进镜像，同时随源一起发布。私钥放仓库 Secret：
+所以必须再跑一次 `adbsign`；而且 `adbsign` 读入索引时也要过 adb 校验，必须带 `--allow-untrusted`，
+否则会打印 `ERROR: packages.adb: UNTRUSTED signature` 然后原样退出（返回码还是 0）。
+公钥由 base-files 装进镜像，同时随源一起发布。私钥放仓库 Secret：
 
 ```sh
 openssl ecparam -name prime256v1 -genkey -noout -out private-key.pem

@@ -274,7 +274,8 @@ jobs:
               before=$(stat -c%s packages.adb)
               # apk 3.0.5 的 mkndx 根本没有 --sign（--sign 只是全局 --sign-key 的缩写，只加载密钥、不签名）。
               # 签名要用 adbsign 把签名块写进 packages.adb 本身——apk v3 的索引没有 .sig 文件。
-              $APK --sign-key "$KEY" --keys-dir "$OUT" adbsign --reset-signatures packages.adb
+              # --allow-untrusted 必带：adbsign 读入时也要过 adb 校验，未签名的索引会被判 UNTRUSTED。
+              $APK --sign-key "$KEY" --keys-dir "$OUT" --allow-untrusted adbsign --reset-signatures packages.adb
               after=$(stat -c%s packages.adb)
               # adbsign 出错也返回 0，只能靠体积变化判断
               [ "$after" -gt "$before" ] || { echo "::error::$d 的索引没签上（$before -> $after 字节）"; exit 1; }
@@ -282,8 +283,8 @@ jobs:
             )
           done
 
-          $APK adbdump --format json "$OUT/target/packages.adb" > /tmp/idx-target.json 2>/dev/null || true
-          $APK adbdump --format json "$OUT/kmods/packages.adb"  > /tmp/idx-kmods.json  2>/dev/null || true
+          $APK --allow-untrusted adbdump --format json "$OUT/target/packages.adb" > /tmp/idx-target.json 2>/dev/null || true
+          $APK --allow-untrusted adbdump --format json "$OUT/kmods/packages.adb"  > /tmp/idx-kmods.json  2>/dev/null || true
           grep -qE '"name": *"kernel"' /tmp/idx-target.json || echo "::warning::target 索引里没找到 kernel 包名，检查一下格式"
           grep -q 'kmod-mac80211' /tmp/idx-kmods.json || echo "::warning::kmods 索引里没找到 kmod-mac80211"
 
