@@ -29,7 +29,8 @@
 ## 固件里有什么
 
 - **NSS 全套硬件加速**：`kmod-qca-nss-drv*` / `-ecm`，PPPoE、L2TP、GRE、VLAN 走 NSS 核心
-- **代理**：OpenClash（含 dnsmasq-full / ruby / kmod-tun / kmod-nft-tproxy）
+- **代理**：OpenClash（含 dnsmasq-full / ruby / kmod-tun / kmod-nft-tproxy）、PassWall
+  （本体编进镜像，xray/sing-box 等核心运行时在 LuCI 里自己下）
 - **网络**：usteer（双频合一频段引导）、ddns + 阿里云/Cloudflare/DNSPod 脚本、sqm-scripts-nss、UPnP、WOL、无线连接历史
 - **全锥 NAT1**：`firewall4` fullcone（LibWrt 自带补丁 + `kmod-nft-fullcone`）
 - **存储**：Samba4、diskman、automount、USB 与 ext4/vfat/exfat/ntfs3/btrfs 驱动、nls（含 cp936）
@@ -156,7 +157,7 @@ ax1800/
 - 跑代理前别开软件卸载（`flow_offloading`），否则部分流量绕过 TUN/TPROXY
 - 路由器上没有 `od`、`timeout`、`partx`、`sgdisk`、`fdisk`；有 `parted`、`blkid`、`mkfs.ext4`
 - busybox ash **不认 `$'...'`**
-- **`apk` 每次事务都报 `1 error`（未解决）**：镜像里 452 个包全被写进 `/etc/apk/world`，其中 166 个 `kmod-*` 绑死本机编译哈希 `kernel=6.12.112~7b482d99…`，公共源里是 `cf8cd0bb…`，任何已配置仓库都找不到它们。注意 apk 的检查对象是**已安装包集合**（`/lib/apk/db/installed`），不是 world：实测把 world 里的 kmod 全删掉，`apk add -s luci-base` 退出码仍是 1，反而把这些包变成孤儿，`apk upgrade` 会计划 Purging 78 个（含 `kmod-mac80211`/`kmod-ath11k`，WiFi 当场没了）。**所以不要裁 world**。根治只有一条路：把自编译产物 `bin/targets/qualcommax/ipq60xx/packages/` 和 `kmods/<内核版本>/` 发布成一个 apk 源，让 apk 真的找得到这 166 个包。在那之前，`1 error` 只影响退出码，装包本身是成功的（iStore / OpenClash 会误判成失败）。
+- **`apk` 每次事务都报 `1 error`（已有解法，见下节自建 apk 源）**：镜像里 452 个包全被写进 `/etc/apk/world`，其中 166 个 `kmod-*` 绑死本机编译哈希 `kernel=6.12.112~7b482d99…`，公共源里是 `cf8cd0bb…`，任何已配置仓库都找不到它们。注意 apk 的检查对象是**已安装包集合**（`/lib/apk/db/installed`），不是 world：实测把 world 里的 kmod 全删掉，`apk add -s luci-base` 退出码仍是 1，反而把这些包变成孤儿，`apk upgrade` 会计划 Purging 78 个（含 `kmod-mac80211`/`kmod-ath11k`，WiFi 当场没了）。**所以不要裁 world**。根治只有一条路：把自编译产物 `bin/targets/qualcommax/ipq60xx/packages/` 和 `kmods/<内核版本>/` 发布成一个 apk 源，让 apk 真的找得到这 166 个包。在那之前，`1 error` 只影响退出码，装包本身是成功的（iStore / OpenClash 会误判成失败）。
 - **别 `apk upgrade` 整个系统**：源里的内核是另一个编译哈希，升级内核会让现有全部 kmod 失配（无线、NSS、文件系统模块全挂）。装单个包用 `apk add 包名` 就行。
 - **别照着 apk 的 `NOTE: Consider running apk upgrade with --prune and/or --available` 做**：`--prune` 会把 90 个包当孤儿清掉（`kmod-fs-f2fs`、`kmod-leds-gpio`、`kmod-gpio-button-hotplug`、`kmod-dsa`/`kmod-dsa-qca8k`、`kmod-thermal`、`kmod-qcom-qmi-helpers`、`kmod-qrtr`、`kmod-mhi-bus`、`kmod-phylink`、`kmod-regmap-core` …），`--available` 会把 99 个包替换成源里的版本。这台机器的内核是打 NSS 补丁自编译的，两条跑下去当场失能。那条 NOTE 是 apk 的通用建议，在「内核非官方」的场景下是陷阱。
 - **包源被换成 `mirrors.vsean.net`（已处理）**：`default-settings-chn` 首启会把 `/etc/apk/repositories.d/distfeeds.list` 里的 `downloads.immortalwrt.org` 全换成 `system.@imm_init[0].apk_mirror`，它的默认值是 `https://mirrors.vsean.net/openwrt`。这个域名现在只回一个跟不过去的 302（日志里是 `wget: exited with error 8` / `unexpected end of file`），六个源索引全刷不下来，`apk update` 就又凑出 1 个 error —— 和 world 那 175 条是两回事。固件里做了双保险：`/etc/uci-defaults/99-ax1800` 先把 `apk_mirror` 钉成官方源（它排在 `99-default-settings-chinese` 前面，对方的 sed 变成空操作），`/etc/rc.local` 每次开机再把残留的 vsean 地址改回来。
@@ -170,8 +171,9 @@ apk 每次事务都会记 1 个 error。根治办法是自己发源：
   两类包（本地 `make` 不生成 `kmods/<内核版本>/`，那种分层只有官方 buildbot 才有，
   全量产物都平铺在 `packages/` 下），用 `apk mkndx` 重新打索引，force-push 到本仓库的
   `apk-repo` 分支。每次一个孤儿提交，历史永远只有 1 个 commit，不会把仓库撑爆。
-- 只发这两类：其余几百个包官方源里都有，没必要在 GitHub 上再存一份（发全量每次构建要多推
-  200~300 MB）。因此固件装别的包仍然走 distfeeds 里的官方源。
+- kmod 是**全编**的（`CONFIG_ALL_KMODS=y`，约 1100 个、合计 45 MB 上下）。产物是 `m`——编出来
+  但不装进 rootfs，所以镜像体积不变，而任何插件的 kmod 依赖都能从 `apk-repo` 装上。普通软件包
+  仍走 distfeeds 里的官方源。
 - 固件构建时自动生成 `/etc/apk/repositories.d/00-ax1800.list`，指向
   `https://raw.githubusercontent.com/<owner>/<repo>/apk-repo/target/packages.adb` 和
   `.../apk-repo/kmods/packages.adb`。

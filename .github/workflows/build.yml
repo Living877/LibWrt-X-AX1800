@@ -75,8 +75,14 @@ jobs:
           # 官方那份 luci-app-store 没有 @(x86_64||aarch64) 架构限制，
           # 而 kiddin9 的副本有，且在本树上它的 Kconfig 符号完全没出现（run 41569582487）。
           cp feeds.conf.default feeds.conf
+          # PassWall：应用本体在 openwrt-passwall，它的 C 依赖（chinadns-ng / dns2socks /
+          # microsocks / tcping / lyaml）在 openwrt-passwall-packages。两个都加，交给下面的 -a 处理。
+          echo 'src-git passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git' >> feeds.conf
+          echo 'src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git' >> feeds.conf
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          test -f package/feeds/passwall/luci-app-passwall/Makefile \
+            || { echo "::error::passwall feed 没装上"; exit 1; }
 
           echo 'src-git istore https://github.com/linkease/istore.git' >> feeds.conf
           ./scripts/feeds update -p istore
@@ -127,6 +133,11 @@ jobs:
             grep -q "^CONFIG_PACKAGE_$s=y$" .config \
               || { echo "::error::$s 没被选中（PassWall 依赖它）"; exit 1; }
           done
+          grep -q '^CONFIG_PACKAGE_luci-app-passwall=y$' .config \
+            || { echo "::error::luci-app-passwall 没被选中"; exit 1; }
+          nkm=$(grep -c '^CONFIG_PACKAGE_kmod-.*=m$' .config || true)
+          echo "ALL_KMODS 生效：$nkm 个 kmod 以 =m 参与编译"
+          [ "$nkm" -gt 800 ] || { echo "::error::ALL_KMODS 没生效（只看到 $nkm 个 kmod=m）"; exit 1; }
           if ! grep -q '^CONFIG_PACKAGE_luci-app-store=y$' .config; then
             echo "===== 诊断：iStore 为什么没被选中 ====="
             echo '--- .config 里的 store/taskd ---'
