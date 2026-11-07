@@ -220,7 +220,9 @@ jobs:
       - name: 编译
         run: |
           set -o pipefail
-          make -j"$(nproc)" || make -j1 || make -j1 V=s
+          # IGNORE_ERRORS=m：=m 的包（ALL_KMODS 打开的那些冷门 kmod）编不过就跳过，
+          # 不让一个用不上的模块拖垮整轮。=y 的包仍然硬失败。
+          make -j"$(nproc)" IGNORE_ERRORS=m || make -j1 IGNORE_ERRORS=m || make -j1 V=s IGNORE_ERRORS=m
 
       - name: 校验产物
         env:
