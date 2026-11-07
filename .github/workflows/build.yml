@@ -123,6 +123,10 @@ jobs:
           grep -E '^CONFIG_(TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01|PACKAGE_luci-theme-argon|PACKAGE_luci-app-store|PACKAGE_luci-app-usteer|PACKAGE_luci-app-autoreboot|PACKAGE_kmod-nft-fullcone|KERNEL_DEBUG_INFO_BTF|KERNEL_XDP_SOCKETS|VERSION_REPO)' .config || true
           grep -q '^CONFIG_PACKAGE_luci-theme-argon=y$' .config \
             || { echo "::error::argon 3.x 没被选中（可能和 feed 里的包名冲突）"; exit 1; }
+          for s in kmod-nft-socket kmod-netlink-diag kmod-ipt-nat; do
+            grep -q "^CONFIG_PACKAGE_$s=y$" .config \
+              || { echo "::error::$s 没被选中（PassWall 依赖它）"; exit 1; }
+          done
           if ! grep -q '^CONFIG_PACKAGE_luci-app-store=y$' .config; then
             echo "===== 诊断：iStore 为什么没被选中 ====="
             echo '--- .config 里的 store/taskd ---'
