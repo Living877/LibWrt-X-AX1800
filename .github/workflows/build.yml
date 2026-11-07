@@ -81,8 +81,12 @@ jobs:
           echo 'src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git' >> feeds.conf
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          test -f package/feeds/passwall/luci-app-passwall/Makefile \
-            || { echo "::error::passwall feed 没装上"; exit 1; }
+          # luci feed（immortalwrt）自带 luci-app-passwall 26.10.29，feeds install 会优先装它，
+          # passwall feed 那份被跳过；原来只认 passwall 路径，run 42329397051 就死在这。
+          test -f package/feeds/luci/luci-app-passwall/Makefile \
+            || test -f package/feeds/passwall/luci-app-passwall/Makefile \
+            || { echo "::error::luci-app-passwall 没装上（哪个 feed 里都没有）"; exit 1; }
+          echo "[+] luci-app-passwall 来自: $(ls -d package/feeds/*/luci-app-passwall)"
 
           echo 'src-git istore https://github.com/linkease/istore.git' >> feeds.conf
           ./scripts/feeds update -p istore
